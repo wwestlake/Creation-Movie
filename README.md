@@ -21,6 +21,12 @@ Sibling apps:
 - `cmake/` — shared LLVM discovery helpers
 - `docs/` — design and rollout notes
 
+Key docs:
+
+- `docs/CREATION_MOVIE_VISION.md` â€” suite-native product vision
+- `docs/CAPABILITIES.md` â€” current scope summary
+- `docs/LANGUAGE_ROLLOUT.md` â€” shared language boundary notes
+
 ## Building
 
 Requires CMake 3.22+, Visual Studio 17 2022, and the shared JUCE checkout already used by Creation Station and Creation Engine.
@@ -43,4 +49,3 @@ That lets Creation Movie share the already-built Windows LLVM install on this ma
 ## Status
 
 Scaffold only. The current app is a placeholder shell showing the intended workspace shape and shared-language host boundary.
-
