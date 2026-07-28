@@ -40,6 +40,20 @@ public:
         juce::Colour colour;
     };
 
+    struct TimelineMarker
+    {
+        juce::String title;
+        double timeSeconds = 0.0;
+    };
+
+    struct TimelineRegion
+    {
+        juce::String title;
+        double startSeconds = 0.0;
+        double endSeconds = 0.0;
+        juce::Colour colour;
+    };
+
     struct TransportState
     {
         bool isPlaying = false;
@@ -64,6 +78,13 @@ private:
     void saveProject();
     void loadProjectFromFile(const juce::File& file);
     void saveProjectToFile(const juce::File& file);
+    void zoomTimeline(double factor);
+    void scrollTimeline(double deltaSeconds);
+    void addMarkerAtPlayhead();
+    void createRegionFromMarkers();
+    void splitSelectedClip();
+    void updateClipPlacement(int clipIndex, double startSeconds, int laneIndex);
+    void movePlayheadTo(double timeSeconds);
     void placeSelectedAssetOnTimeline();
     void selectAsset(int assetIndex);
     void selectClip(int clipIndex);
@@ -79,21 +100,33 @@ private:
     void closePreviewWindow();
     void togglePlayback();
     void stopPlayback();
+    void toggleRecording();
     void toggleScrubMode();
     void stepPlayheadByFrames(int frameDelta);
 
     TransportState transportState;
     juce::String projectName { "Untitled Movie" };
+    bool isRecording = false;
 
     juce::Label titleLabel;
     juce::Label subtitleLabel;
     juce::Label projectChipLabel;
     juce::Label runtimeLabel;
     juce::Label statusLabel;
+    juce::TextButton rewindButton { "<<" };
+    juce::TextButton fastForwardButton { ">>" };
+    juce::TextButton recordButton { "Record" };
     juce::TextButton openButton { "Open Project" };
     juce::TextButton saveButton { "Save Project" };
     juce::TextButton importButton { "Import Media" };
     juce::TextButton placeButton { "Place On Timeline" };
+    juce::TextButton zoomOutButton { "Zoom -" };
+    juce::TextButton zoomInButton { "Zoom +" };
+    juce::TextButton scrollLeftButton { "< Scroll" };
+    juce::TextButton scrollRightButton { "Scroll >" };
+    juce::TextButton markerButton { "+ Marker" };
+    juce::TextButton regionButton { "+ Region" };
+    juce::TextButton splitButton { "Split Clip" };
     juce::TextButton stepBackButton { "< Frame" };
     juce::TextButton stepForwardButton { "Frame >" };
     juce::TextButton playButton { "Play" };
@@ -105,6 +138,8 @@ private:
     juce::AudioFormatManager audioFormatManager;
     std::vector<AssetRecord> assets;
     std::vector<TimelineClip> timelineClips;
+    std::vector<TimelineMarker> timelineMarkers;
+    std::vector<TimelineRegion> timelineRegions;
     int selectedAssetIndex = -1;
     int selectedClipIndex = -1;
     juce::File currentProjectFile;

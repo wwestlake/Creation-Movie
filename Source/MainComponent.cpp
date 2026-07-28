@@ -172,6 +172,128 @@ private:
     std::function<void()> onClose;
 };
 
+class StationStyleTransportLookAndFeel final : public juce::LookAndFeel_V4
+{
+public:
+    void drawButtonBackground(juce::Graphics& g,
+                              juce::Button& button,
+                              const juce::Colour& backgroundColour,
+                              bool isMouseOverButton,
+                              bool isButtonDown) override
+    {
+        juce::ignoreUnused(backgroundColour);
+
+        auto bounds = button.getLocalBounds().toFloat().reduced(1.5f);
+        auto isToggle = button.getToggleState();
+        auto accent = juce::Colour(0xff59dfff);
+        auto fill = juce::Colour(0xff17222c);
+
+        if (button.getName() == "recordButton")
+            accent = juce::Colour(0xffff5f73);
+        else if (button.getName() == "scrubButton")
+            accent = juce::Colour(0xff56f4ff);
+
+        if (isToggle)
+            fill = accent.withAlpha(0.25f).overlaidWith(juce::Colour(0xff13202b));
+        else if (isButtonDown)
+            fill = accent.withAlpha(0.20f).overlaidWith(fill);
+        else if (isMouseOverButton)
+            fill = accent.withAlpha(0.12f).overlaidWith(fill);
+
+        g.setColour(accent.withAlpha(isToggle ? 0.35f : isMouseOverButton ? 0.35f : 0.14f));
+        g.fillRoundedRectangle(bounds.expanded(2.0f), 13.0f);
+        g.setColour(fill);
+        g.fillRoundedRectangle(bounds, 11.0f);
+
+        g.setColour(accent.withAlpha(isToggle ? 1.0f : 0.62f));
+        g.drawRoundedRectangle(bounds, 11.0f, isToggle ? 2.0f : 1.3f);
+
+        auto ring = bounds.reduced(7.0f, 5.0f);
+        if (ring.getWidth() > 18.0f && ring.getHeight() > 18.0f && button.getButtonText() != "record")
+        {
+            auto diameter = juce::jmin(ring.getWidth(), ring.getHeight());
+            auto circle = juce::Rectangle<float>(diameter, diameter).withCentre(ring.getCentre());
+            g.setColour(accent.withAlpha(isToggle ? 0.96f : 0.36f));
+            g.drawEllipse(circle, isToggle ? 2.4f : 2.0f);
+        }
+    }
+
+    void drawButtonText(juce::Graphics& g,
+                        juce::TextButton& button,
+                        bool isMouseOverButton,
+                        bool isButtonDown) override
+    {
+        auto bounds = button.getLocalBounds().toFloat().reduced(8.0f, 7.0f);
+        auto accent = button.getName() == "recordButton" ? juce::Colour(0xffff6b7c)
+                                                         : juce::Colour(0xffdcecff);
+
+        g.setColour(button.getToggleState() ? juce::Colours::white
+                                            : (isButtonDown ? accent
+                                                            : isMouseOverButton ? juce::Colour(0xffdcecff)
+                                                                                : juce::Colour(0xffb8c4d5)));
+        drawTransportIcon(g, bounds, button.getButtonText());
+    }
+
+private:
+    static void drawTransportIcon(juce::Graphics& g, juce::Rectangle<float> bounds, const juce::String& iconName)
+    {
+        auto centre = bounds.getCentre();
+        auto size = juce::jmin(bounds.getWidth(), bounds.getHeight());
+
+        if (iconName == "play")
+        {
+            juce::Path path;
+            path.addTriangle(centre.x - size * 0.22f, centre.y - size * 0.32f,
+                             centre.x - size * 0.22f, centre.y + size * 0.32f,
+                             centre.x + size * 0.32f, centre.y);
+            g.fillPath(path);
+            return;
+        }
+
+        if (iconName == "stop")
+        {
+            auto square = juce::Rectangle<float>(size * 0.55f, size * 0.55f).withCentre(centre);
+            g.fillRoundedRectangle(square, 2.0f);
+            return;
+        }
+
+        if (iconName == "record")
+        {
+            auto circle = juce::Rectangle<float>(size * 0.48f, size * 0.48f).withCentre(centre);
+            g.fillEllipse(circle);
+            return;
+        }
+
+        if (iconName == "rewind" || iconName == "forward")
+        {
+            const auto direction = iconName == "rewind" ? -1.0f : 1.0f;
+            juce::Path path;
+            path.addTriangle(centre.x - direction * size * 0.02f, centre.y,
+                             centre.x + direction * size * 0.22f, centre.y - size * 0.28f,
+                             centre.x + direction * size * 0.22f, centre.y + size * 0.28f);
+            path.addTriangle(centre.x - direction * size * 0.30f, centre.y,
+                             centre.x - direction * size * 0.06f, centre.y - size * 0.28f,
+                             centre.x - direction * size * 0.06f, centre.y + size * 0.28f);
+            g.fillPath(path);
+            return;
+        }
+
+        if (iconName == "scrub")
+        {
+            auto arc = bounds.reduced(size * 0.18f);
+            g.drawEllipse(arc, 2.0f);
+            g.drawLine(arc.getCentreX(), arc.getY(), arc.getCentreX(), arc.getBottom(), 2.0f);
+            return;
+        }
+    }
+};
+
+StationStyleTransportLookAndFeel& getStationStyleTransportLookAndFeel()
+{
+    static StationStyleTransportLookAndFeel lookAndFeel;
+    return lookAndFeel;
+}
+
 class WorkspacePanelBase : public juce::Component
 {
 public:
@@ -347,13 +469,21 @@ class TimelineCanvas final : public WorkspacePanelBase
 public:
     TimelineCanvas(const MainComponent::TransportState& stateToUse,
                    const std::vector<MainComponent::TimelineClip>& clipsToUse,
+                   const std::vector<MainComponent::TimelineMarker>& markersToUse,
+                   const std::vector<MainComponent::TimelineRegion>& regionsToUse,
                    const int& selectedClipIndexToUse,
-                   std::function<void(int)> onClipSelectedToUse)
+                   std::function<void(int)> onClipSelectedToUse,
+                   std::function<void(int, double, int)> onClipMovedToUse,
+                   std::function<void(double)> onPlayheadMovedToUse)
         : WorkspacePanelBase("Video Tracker"),
           state(stateToUse),
           clips(clipsToUse),
+          markers(markersToUse),
+          regions(regionsToUse),
           selectedClipIndex(selectedClipIndexToUse),
-          onClipSelected(std::move(onClipSelectedToUse))
+          onClipSelected(std::move(onClipSelectedToUse)),
+          onClipMoved(std::move(onClipMovedToUse)),
+          onPlayheadMoved(std::move(onPlayheadMovedToUse))
     {
     }
 
@@ -371,6 +501,9 @@ public:
         g.fillRoundedRectangle(labels.toFloat(), 10.0f);
         g.setColour(juce::Colour(0xff0b111b));
         g.fillRoundedRectangle(area.toFloat(), 10.0f);
+
+        for (const auto& region : regions)
+            drawRegion(g, area, region);
 
         const auto end = state.visibleStartSeconds + state.visibleLengthSeconds;
         for (int second = static_cast<int>(std::floor(state.visibleStartSeconds)); second <= static_cast<int>(std::ceil(end)); ++second)
@@ -428,6 +561,9 @@ public:
         for (size_t i = 0; i < clips.size(); ++i)
             drawClip(g, area, static_cast<int>(i), clips[i], static_cast<int>(i) == selectedClipIndex);
 
+        for (const auto& marker : markers)
+            drawMarker(g, ruler, area, marker);
+
         const auto playheadRatio = (state.playheadSeconds - state.visibleStartSeconds) / state.visibleLengthSeconds;
         const auto playheadX = area.getX() + static_cast<int>(playheadRatio * area.getWidth());
         g.setColour(creation_movie::branding::accentColour());
@@ -437,9 +573,8 @@ public:
 
     void mouseUp(const juce::MouseEvent& event) override
     {
-        auto area = getPanelContentBounds();
-        area.removeFromTop(42);
-        area.removeFromLeft(148);
+        dragClipIndex = -1;
+        auto area = getTimelineArea();
 
         for (size_t i = 0; i < clips.size(); ++i)
         {
@@ -450,9 +585,96 @@ public:
                 return;
             }
         }
+
+        if (area.contains(event.getPosition()) && onPlayheadMoved)
+            onPlayheadMoved(xToTime(area, event.x));
+    }
+
+    void mouseDown(const juce::MouseEvent& event) override
+    {
+        auto area = getTimelineArea();
+        for (size_t i = 0; i < clips.size(); ++i)
+        {
+            auto clipBounds = getClipBounds(area, clips[i]);
+            if (clipBounds.contains(event.getPosition()))
+            {
+                dragClipIndex = static_cast<int>(i);
+                dragOffsetSeconds = xToTime(area, event.x) - clips[i].startSeconds;
+                return;
+            }
+        }
+    }
+
+    void mouseDrag(const juce::MouseEvent& event) override
+    {
+        if (dragClipIndex < 0 || dragClipIndex >= static_cast<int>(clips.size()) || ! onClipMoved)
+            return;
+
+        auto area = getTimelineArea();
+        const auto laneHeight = 68;
+        auto newLane = juce::jlimit(0, 4, (event.y - area.getY()) / laneHeight);
+        auto newStart = xToTime(area, event.x) - dragOffsetSeconds;
+        newStart = juce::jmax(0.0, newStart);
+        onClipMoved(dragClipIndex, newStart, newLane);
     }
 
 private:
+    juce::Rectangle<int> getTimelineArea() const
+    {
+        auto area = getPanelContentBounds();
+        area.removeFromTop(42);
+        area.removeFromLeft(148);
+        return area;
+    }
+
+    double xToTime(juce::Rectangle<int> laneArea, int x) const
+    {
+        const auto ratio = juce::jlimit(0.0, 1.0, (x - laneArea.getX()) / static_cast<double>(juce::jmax(1, laneArea.getWidth())));
+        return state.visibleStartSeconds + (ratio * state.visibleLengthSeconds);
+    }
+
+    void drawMarker(juce::Graphics& g, juce::Rectangle<int> ruler, juce::Rectangle<int> laneArea, const MainComponent::TimelineMarker& marker) const
+    {
+        const auto ratio = (marker.timeSeconds - state.visibleStartSeconds) / state.visibleLengthSeconds;
+        if (ratio < 0.0 || ratio > 1.0)
+            return;
+
+        const auto x = laneArea.getX() + static_cast<int>(ratio * laneArea.getWidth());
+        g.setColour(juce::Colour(0xfff0d36a));
+        g.drawVerticalLine(x, static_cast<float>(ruler.getBottom()), static_cast<float>(laneArea.getBottom()));
+        juce::Path flag;
+        flag.startNewSubPath(static_cast<float>(x), static_cast<float>(ruler.getY() + 4));
+        flag.lineTo(static_cast<float>(x + 14), static_cast<float>(ruler.getY() + 10));
+        flag.lineTo(static_cast<float>(x), static_cast<float>(ruler.getY() + 16));
+        flag.closeSubPath();
+        g.fillPath(flag);
+        g.setColour(juce::Colours::white.withAlpha(0.92f));
+        g.setFont(juce::Font(11.0f, juce::Font::bold));
+        g.drawText(marker.title, x + 18, ruler.getY() + 2, 120, 16, juce::Justification::left, false);
+    }
+
+    void drawRegion(juce::Graphics& g, juce::Rectangle<int> laneArea, const MainComponent::TimelineRegion& region) const
+    {
+        const auto startRatio = (region.startSeconds - state.visibleStartSeconds) / state.visibleLengthSeconds;
+        const auto endRatio = (region.endSeconds - state.visibleStartSeconds) / state.visibleLengthSeconds;
+        const auto clampedStart = juce::jlimit(0.0, 1.0, startRatio);
+        const auto clampedEnd = juce::jlimit(0.0, 1.0, endRatio);
+        if (clampedEnd <= clampedStart)
+            return;
+
+        auto bounds = juce::Rectangle<int>(laneArea.getX() + static_cast<int>(clampedStart * laneArea.getWidth()),
+                                           laneArea.getY(),
+                                           static_cast<int>((clampedEnd - clampedStart) * laneArea.getWidth()),
+                                           laneArea.getHeight());
+        g.setColour(region.colour.withAlpha(0.12f));
+        g.fillRoundedRectangle(bounds.toFloat(), 8.0f);
+        g.setColour(region.colour.withAlpha(0.28f));
+        g.drawRoundedRectangle(bounds.toFloat(), 8.0f, 1.0f);
+        g.setColour(region.colour.brighter(0.3f));
+        g.setFont(juce::Font(12.0f, juce::Font::bold));
+        g.drawText(region.title, bounds.reduced(8, 4).removeFromTop(18), juce::Justification::centredLeft, false);
+    }
+
     juce::Rectangle<int> getClipBounds(juce::Rectangle<int> laneArea, const MainComponent::TimelineClip& clip) const
     {
         const auto laneHeight = 68;
@@ -492,8 +714,14 @@ private:
 
     const MainComponent::TransportState& state;
     const std::vector<MainComponent::TimelineClip>& clips;
+    const std::vector<MainComponent::TimelineMarker>& markers;
+    const std::vector<MainComponent::TimelineRegion>& regions;
     const int& selectedClipIndex;
     std::function<void(int)> onClipSelected;
+    std::function<void(int, double, int)> onClipMoved;
+    std::function<void(double)> onPlayheadMoved;
+    int dragClipIndex = -1;
+    double dragOffsetSeconds = 0.0;
 };
 
 class AssetLibraryPanel final : public WorkspacePanelBase
@@ -726,10 +954,42 @@ MainComponent::MainComponent()
     statusLabel.setColour(juce::Label::textColourId, juce::Colour(0xffd9e1ec));
     addAndMakeVisible(statusLabel);
 
+    rewindButton.setLookAndFeel(&getStationStyleTransportLookAndFeel());
+    fastForwardButton.setLookAndFeel(&getStationStyleTransportLookAndFeel());
+    stopButton.setLookAndFeel(&getStationStyleTransportLookAndFeel());
+    playButton.setLookAndFeel(&getStationStyleTransportLookAndFeel());
+    scrubButton.setLookAndFeel(&getStationStyleTransportLookAndFeel());
+    recordButton.setLookAndFeel(&getStationStyleTransportLookAndFeel());
+
+    rewindButton.setButtonText("rewind");
+    fastForwardButton.setButtonText("forward");
+    stopButton.setButtonText("stop");
+    playButton.setButtonText("play");
+    scrubButton.setButtonText("scrub");
+    recordButton.setButtonText("record");
+    recordButton.setName("recordButton");
+    scrubButton.setName("scrubButton");
+    rewindButton.setTooltip("Move the visible timeline earlier");
+    fastForwardButton.setTooltip("Move the visible timeline later");
+    stopButton.setTooltip("Stop playback");
+    playButton.setTooltip("Play from the current playhead");
+    scrubButton.setTooltip("Toggle scrub mode");
+    recordButton.setTooltip("Arm transport recording mode");
+
     openButton.onClick = [this] { openProject(); };
     saveButton.onClick = [this] { saveProject(); };
+    rewindButton.onClick = [this] { scrollTimeline(-(transportState.visibleLengthSeconds * 0.25)); };
+    fastForwardButton.onClick = [this] { scrollTimeline(transportState.visibleLengthSeconds * 0.25); };
+    recordButton.onClick = [this] { toggleRecording(); };
     importButton.onClick = [this] { importMediaFiles(); };
     placeButton.onClick = [this] { placeSelectedAssetOnTimeline(); };
+    zoomOutButton.onClick = [this] { zoomTimeline(1.35); };
+    zoomInButton.onClick = [this] { zoomTimeline(0.75); };
+    scrollLeftButton.onClick = [this] { scrollTimeline(-(transportState.visibleLengthSeconds * 0.35)); };
+    scrollRightButton.onClick = [this] { scrollTimeline(transportState.visibleLengthSeconds * 0.35); };
+    markerButton.onClick = [this] { addMarkerAtPlayhead(); };
+    regionButton.onClick = [this] { createRegionFromMarkers(); };
+    splitButton.onClick = [this] { splitSelectedClip(); };
     stepBackButton.onClick = [this] { stepPlayheadByFrames(-1); };
     stepForwardButton.onClick = [this] { stepPlayheadByFrames(1); };
     playButton.onClick = [this] { togglePlayback(); };
@@ -738,10 +998,20 @@ MainComponent::MainComponent()
     previewButton.onClick = [this] { showPreviewWindow(); };
     eulaButton.onClick = [this] { showEulaWindow(); };
 
+    addAndMakeVisible(rewindButton);
+    addAndMakeVisible(fastForwardButton);
+    addAndMakeVisible(recordButton);
     addAndMakeVisible(openButton);
     addAndMakeVisible(saveButton);
     addAndMakeVisible(importButton);
     addAndMakeVisible(placeButton);
+    addAndMakeVisible(zoomOutButton);
+    addAndMakeVisible(zoomInButton);
+    addAndMakeVisible(scrollLeftButton);
+    addAndMakeVisible(scrollRightButton);
+    addAndMakeVisible(markerButton);
+    addAndMakeVisible(regionButton);
+    addAndMakeVisible(splitButton);
     addAndMakeVisible(stepBackButton);
     addAndMakeVisible(stepForwardButton);
     addAndMakeVisible(playButton);
@@ -753,7 +1023,14 @@ MainComponent::MainComponent()
     seedDemoContent();
 
     previewSurface = std::make_unique<PreviewSurface>(transportState, assets, timelineClips, selectedAssetIndex, selectedClipIndex);
-    timelineCanvas = std::make_unique<TimelineCanvas>(transportState, timelineClips, selectedClipIndex, [this](int clipIndex) { selectClip(clipIndex); });
+    timelineCanvas = std::make_unique<TimelineCanvas>(transportState,
+                                                      timelineClips,
+                                                      timelineMarkers,
+                                                      timelineRegions,
+                                                      selectedClipIndex,
+                                                      [this](int clipIndex) { selectClip(clipIndex); },
+                                                      [this](int clipIndex, double startSeconds, int laneIndex) { updateClipPlacement(clipIndex, startSeconds, laneIndex); },
+                                                      [this](double timeSeconds) { movePlayheadTo(timeSeconds); });
     assetLibraryPanel = std::make_unique<AssetLibraryPanel>(assets, selectedAssetIndex, [this](int assetIndex) { selectAsset(assetIndex); });
     inspectorPanel = std::make_unique<InspectorPanel>(transportState, assets, timelineClips, selectedAssetIndex, selectedClipIndex);
 
@@ -771,6 +1048,12 @@ MainComponent::MainComponent()
 
 MainComponent::~MainComponent()
 {
+    rewindButton.setLookAndFeel(nullptr);
+    fastForwardButton.setLookAndFeel(nullptr);
+    stopButton.setLookAndFeel(nullptr);
+    playButton.setLookAndFeel(nullptr);
+    scrubButton.setLookAndFeel(nullptr);
+    recordButton.setLookAndFeel(nullptr);
     closePreviewWindow();
     closeEulaWindow();
 }
@@ -790,6 +1073,12 @@ void MainComponent::paint(juce::Graphics& g)
     g.fillRoundedRectangle(header, 22.0f);
     g.setColour(creation_movie::branding::accentColour().withAlpha(0.30f));
     g.drawRoundedRectangle(header, 22.0f, 1.0f);
+
+    auto transportGlow = juce::Rectangle<float>(chrome.getX() + 446.0f, chrome.getY() + 30.0f, 468.0f, 52.0f);
+    g.setColour(isRecording ? juce::Colour(0x33ff5f73) : juce::Colour(0x2259dfff));
+    g.fillRoundedRectangle(transportGlow, 18.0f);
+    g.setColour(isRecording ? juce::Colour(0xffff6b7c) : juce::Colour(0xff59dfff).withAlpha(0.65f));
+    g.drawRoundedRectangle(transportGlow, 18.0f, isRecording ? 1.8f : 1.0f);
 }
 
 void MainComponent::resized()
@@ -803,23 +1092,35 @@ void MainComponent::resized()
     subtitleLabel.setBounds(titleArea.removeFromTop(26));
     runtimeLabel.setBounds(titleArea.removeFromTop(22));
 
-    auto centerHeader = header.removeFromLeft(280);
+    auto transportHeader = header.removeFromLeft(490);
+    auto transportRow = transportHeader.removeFromTop(52);
+    rewindButton.setBounds(transportRow.removeFromLeft(62).reduced(4, 2));
+    fastForwardButton.setBounds(transportRow.removeFromLeft(62).reduced(4, 2));
+    stopButton.setBounds(transportRow.removeFromLeft(62).reduced(4, 2));
+    playButton.setBounds(transportRow.removeFromLeft(78).reduced(4, 2));
+    scrubButton.setBounds(transportRow.removeFromLeft(84).reduced(4, 2));
+    recordButton.setBounds(transportRow.removeFromLeft(92).reduced(4, 2));
+
+    auto centerHeader = header.removeFromLeft(260);
     projectChipLabel.setBounds(centerHeader.removeFromTop(42).reduced(10, 4));
     statusLabel.setBounds(centerHeader.removeFromTop(26).reduced(10, 0));
 
-    auto buttonStrip = header;
-    auto topButtons = buttonStrip.removeFromTop(40);
-    openButton.setBounds(topButtons.removeFromLeft(118).reduced(4, 2));
-    saveButton.setBounds(topButtons.removeFromLeft(118).reduced(4, 2));
-    importButton.setBounds(topButtons.removeFromLeft(118).reduced(4, 2));
-    placeButton.setBounds(topButtons.removeFromLeft(138).reduced(4, 2));
-    stepBackButton.setBounds(topButtons.removeFromLeft(92).reduced(4, 2));
-    stepForwardButton.setBounds(topButtons.removeFromLeft(92).reduced(4, 2));
-    playButton.setBounds(topButtons.removeFromLeft(78).reduced(4, 2));
-    stopButton.setBounds(topButtons.removeFromLeft(78).reduced(4, 2));
-    scrubButton.setBounds(topButtons.removeFromLeft(88).reduced(4, 2));
-    previewButton.setBounds(topButtons.removeFromLeft(156).reduced(4, 2));
-    eulaButton.setBounds(topButtons.removeFromLeft(68).reduced(4, 2));
+    auto controlRow = header.removeFromTop(42);
+    openButton.setBounds(controlRow.removeFromLeft(102).reduced(4, 2));
+    saveButton.setBounds(controlRow.removeFromLeft(102).reduced(4, 2));
+    importButton.setBounds(controlRow.removeFromLeft(106).reduced(4, 2));
+    placeButton.setBounds(controlRow.removeFromLeft(124).reduced(4, 2));
+    zoomOutButton.setBounds(controlRow.removeFromLeft(80).reduced(4, 2));
+    zoomInButton.setBounds(controlRow.removeFromLeft(80).reduced(4, 2));
+    scrollLeftButton.setBounds(controlRow.removeFromLeft(86).reduced(4, 2));
+    scrollRightButton.setBounds(controlRow.removeFromLeft(86).reduced(4, 2));
+    markerButton.setBounds(controlRow.removeFromLeft(84).reduced(4, 2));
+    regionButton.setBounds(controlRow.removeFromLeft(84).reduced(4, 2));
+    splitButton.setBounds(controlRow.removeFromLeft(84).reduced(4, 2));
+    stepBackButton.setBounds(controlRow.removeFromLeft(80).reduced(4, 2));
+    stepForwardButton.setBounds(controlRow.removeFromLeft(80).reduced(4, 2));
+    previewButton.setBounds(controlRow.removeFromLeft(150).reduced(4, 2));
+    eulaButton.setBounds(controlRow.removeFromLeft(64).reduced(4, 2));
 
     auto upperRow = area.removeFromTop(352);
     auto leftColumn = upperRow.removeFromLeft(322);
@@ -941,6 +1242,101 @@ void MainComponent::saveProject()
                                     });
 }
 
+void MainComponent::zoomTimeline(double factor)
+{
+    transportState.visibleLengthSeconds = juce::jlimit(4.0, 240.0, transportState.visibleLengthSeconds * factor);
+    transportState.visibleStartSeconds = juce::jlimit(0.0,
+                                                      juce::jmax(0.0, transportState.projectDurationSeconds - transportState.visibleLengthSeconds),
+                                                      transportState.playheadSeconds - (transportState.visibleLengthSeconds * 0.5));
+    timelineCanvas->repaint();
+    inspectorPanel->repaint();
+    updateStatusText();
+}
+
+void MainComponent::scrollTimeline(double deltaSeconds)
+{
+    transportState.visibleStartSeconds = juce::jlimit(0.0,
+                                                      juce::jmax(0.0, transportState.projectDurationSeconds - transportState.visibleLengthSeconds),
+                                                      transportState.visibleStartSeconds + deltaSeconds);
+    timelineCanvas->repaint();
+    inspectorPanel->repaint();
+    updateStatusText();
+}
+
+void MainComponent::addMarkerAtPlayhead()
+{
+    TimelineMarker marker;
+    marker.title = "M" + juce::String(static_cast<int>(timelineMarkers.size()) + 1);
+    marker.timeSeconds = transportState.playheadSeconds;
+    timelineMarkers.push_back(std::move(marker));
+    std::sort(timelineMarkers.begin(), timelineMarkers.end(), [](const auto& a, const auto& b) { return a.timeSeconds < b.timeSeconds; });
+    timelineCanvas->repaint();
+    inspectorPanel->repaint();
+}
+
+void MainComponent::createRegionFromMarkers()
+{
+    if (timelineMarkers.size() < 2)
+        return;
+
+    const auto& first = timelineMarkers[timelineMarkers.size() - 2];
+    const auto& second = timelineMarkers[timelineMarkers.size() - 1];
+    TimelineRegion region;
+    region.title = "Region " + juce::String(static_cast<int>(timelineRegions.size()) + 1);
+    region.startSeconds = juce::jmin(first.timeSeconds, second.timeSeconds);
+    region.endSeconds = juce::jmax(first.timeSeconds, second.timeSeconds);
+    region.colour = creation_movie::branding::accentColour();
+    timelineRegions.push_back(std::move(region));
+    timelineCanvas->repaint();
+}
+
+void MainComponent::splitSelectedClip()
+{
+    if (selectedClipIndex < 0 || selectedClipIndex >= static_cast<int>(timelineClips.size()))
+        return;
+
+    auto& clip = timelineClips[static_cast<size_t>(selectedClipIndex)];
+    if (transportState.playheadSeconds <= clip.startSeconds + (1.0 / transportState.framesPerSecond)
+        || transportState.playheadSeconds >= clip.startSeconds + clip.durationSeconds - (1.0 / transportState.framesPerSecond))
+        return;
+
+    const auto splitTime = transportState.playheadSeconds;
+    const auto secondDuration = (clip.startSeconds + clip.durationSeconds) - splitTime;
+    clip.durationSeconds = splitTime - clip.startSeconds;
+
+    TimelineClip splitClip = clip;
+    splitClip.startSeconds = splitTime;
+    splitClip.durationSeconds = secondDuration;
+    splitClip.title = clip.title + " B";
+    timelineClips.insert(timelineClips.begin() + selectedClipIndex + 1, splitClip);
+    selectClip(selectedClipIndex + 1);
+}
+
+void MainComponent::updateClipPlacement(int clipIndex, double startSeconds, int laneIndex)
+{
+    if (clipIndex < 0 || clipIndex >= static_cast<int>(timelineClips.size()))
+        return;
+
+    auto& clip = timelineClips[static_cast<size_t>(clipIndex)];
+    clip.startSeconds = juce::jlimit(0.0, juce::jmax(0.0, transportState.projectDurationSeconds - clip.durationSeconds), startSeconds);
+    clip.laneIndex = juce::jlimit(0, 4, laneIndex);
+    selectedClipIndex = clipIndex;
+    transportState.playheadSeconds = clip.startSeconds;
+    timelineCanvas->repaint();
+    inspectorPanel->repaint();
+    previewSurface->repaint();
+    updateStatusText();
+}
+
+void MainComponent::movePlayheadTo(double timeSeconds)
+{
+    transportState.playheadSeconds = juce::jlimit(0.0, transportState.projectDurationSeconds, timeSeconds);
+    previewSurface->repaint();
+    timelineCanvas->repaint();
+    inspectorPanel->repaint();
+    updateStatusText();
+}
+
 void MainComponent::loadProjectFromFile(const juce::File& file)
 {
     const auto jsonText = file.loadFileAsString();
@@ -969,6 +1365,8 @@ void MainComponent::loadProjectFromFile(const juce::File& file)
 
     assets.clear();
     timelineClips.clear();
+    timelineMarkers.clear();
+    timelineRegions.clear();
 
     if (const auto* assetArray = root->getProperty("assets").getArray())
     {
@@ -1008,6 +1406,36 @@ void MainComponent::loadProjectFromFile(const juce::File& file)
                 clip.durationSeconds = static_cast<double>(object->getProperty("durationSeconds"));
                 clip.colour = juce::Colour::fromString(object->getProperty("colour").toString());
                 timelineClips.push_back(std::move(clip));
+            }
+        }
+    }
+
+    if (const auto* markerArray = root->getProperty("markers").getArray())
+    {
+        for (const auto& entry : *markerArray)
+        {
+            if (const auto* object = entry.getDynamicObject())
+            {
+                TimelineMarker marker;
+                marker.title = object->getProperty("title").toString();
+                marker.timeSeconds = static_cast<double>(object->getProperty("timeSeconds"));
+                timelineMarkers.push_back(std::move(marker));
+            }
+        }
+    }
+
+    if (const auto* regionArray = root->getProperty("regions").getArray())
+    {
+        for (const auto& entry : *regionArray)
+        {
+            if (const auto* object = entry.getDynamicObject())
+            {
+                TimelineRegion region;
+                region.title = object->getProperty("title").toString();
+                region.startSeconds = static_cast<double>(object->getProperty("startSeconds"));
+                region.endSeconds = static_cast<double>(object->getProperty("endSeconds"));
+                region.colour = juce::Colour::fromString(object->getProperty("colour").toString());
+                timelineRegions.push_back(std::move(region));
             }
         }
     }
@@ -1066,6 +1494,28 @@ void MainComponent::saveProjectToFile(const juce::File& file)
         clipArray.add(juce::var(object.get()));
     }
     root->setProperty("clips", juce::var(clipArray));
+
+    juce::Array<juce::var> markerArray;
+    for (const auto& marker : timelineMarkers)
+    {
+        juce::DynamicObject::Ptr object = new juce::DynamicObject();
+        object->setProperty("title", marker.title);
+        object->setProperty("timeSeconds", marker.timeSeconds);
+        markerArray.add(juce::var(object.get()));
+    }
+    root->setProperty("markers", juce::var(markerArray));
+
+    juce::Array<juce::var> regionArray;
+    for (const auto& region : timelineRegions)
+    {
+        juce::DynamicObject::Ptr object = new juce::DynamicObject();
+        object->setProperty("title", region.title);
+        object->setProperty("startSeconds", region.startSeconds);
+        object->setProperty("endSeconds", region.endSeconds);
+        object->setProperty("colour", region.colour.toString());
+        regionArray.add(juce::var(object.get()));
+    }
+    root->setProperty("regions", juce::var(regionArray));
 
     file.replaceWithText(juce::JSON::toString(juce::var(root.get()), true));
     currentProjectFile = file;
@@ -1134,6 +1584,8 @@ void MainComponent::seedDemoContent()
 {
     assets.clear();
     timelineClips.clear();
+    timelineMarkers.clear();
+    timelineRegions.clear();
     projectName = "Untitled Movie";
     currentProjectFile = {};
 
@@ -1180,6 +1632,9 @@ void MainComponent::seedDemoContent()
     timelineClips.push_back({ assets[3].id, "Lower Third", 1, 13.8, 3.8, colourForAssetKind(AssetKind::image) });
     timelineClips.push_back({ assets[1].id, "Dialogue", 2, 9.2, 6.4, colourForAssetKind(AssetKind::audio) });
     timelineClips.push_back({ assets[1].id, "Theme Bed", 3, 8.6, 11.1, juce::Colour(0xff2f9f7f) });
+    timelineMarkers.push_back({ "Intro", 9.0 });
+    timelineMarkers.push_back({ "Verse", 17.0 });
+    timelineRegions.push_back({ "Act 1", 8.8, 18.0, juce::Colour(0xff6a9bd8) });
 
     selectedClipIndex = 0;
     selectedAssetIndex = -1;
@@ -1211,10 +1666,13 @@ void MainComponent::timerCallback()
 
 void MainComponent::updateTransportButtons()
 {
-    playButton.setButtonText(transportState.isPlaying ? "Pause" : "Play");
+    playButton.setButtonText("play");
+    playButton.setToggleState(transportState.isPlaying, juce::dontSendNotification);
     scrubButton.setToggleState(transportState.scrubMode, juce::dontSendNotification);
-    scrubButton.setColour(juce::TextButton::buttonOnColourId, creation_movie::branding::accentColour());
+    recordButton.setToggleState(isRecording, juce::dontSendNotification);
     placeButton.setEnabled(selectedAssetIndex >= 0);
+    splitButton.setEnabled(selectedClipIndex >= 0);
+    regionButton.setEnabled(timelineMarkers.size() >= 2);
 }
 
 void MainComponent::updateStatusText()
@@ -1298,6 +1756,17 @@ void MainComponent::stopPlayback()
     updateStatusText();
     previewSurface->repaint();
     timelineCanvas->repaint();
+}
+
+void MainComponent::toggleRecording()
+{
+    isRecording = ! isRecording;
+    if (isRecording)
+        transportState.isPlaying = false;
+
+    updateTransportButtons();
+    updateStatusText();
+    repaint();
 }
 
 void MainComponent::toggleScrubMode()
