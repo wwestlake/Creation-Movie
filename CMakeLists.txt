@@ -21,8 +21,31 @@ endif()
 include(cmake/CreationSharedLLVM.cmake)
 configure_creation_shared_llvm(CM "Creation Movie")
 
+set(CREATION_SUITE_SHARED_DIR "D:/000 Creation Suite/shared" CACHE PATH "Path to the Creation Suite shared code root")
+
 add_subdirectory("${JUCE_DIR}" juce)
 add_subdirectory(Language)
+
+set(CM_ASSET_SYSTEM_TARGET "")
+if(EXISTS "${CREATION_SUITE_SHARED_DIR}/AssetSystem/CMakeLists.txt")
+    add_subdirectory("${CREATION_SUITE_SHARED_DIR}/AssetSystem"
+                     "${CMAKE_CURRENT_BINARY_DIR}/CreationSuiteSharedAssetSystem")
+    set(CM_ASSET_SYSTEM_TARGET creation_suite_asset_system)
+endif()
+
+set(CM_SERVICES_TARGET "")
+if(EXISTS "${CREATION_SUITE_SHARED_DIR}/Services/CMakeLists.txt")
+    add_subdirectory("${CREATION_SUITE_SHARED_DIR}/Services"
+                     "${CMAKE_CURRENT_BINARY_DIR}/CreationSuiteSharedServices")
+    set(CM_SERVICES_TARGET creation_suite_services)
+endif()
+
+set(CM_UI_TARGET "")
+if(EXISTS "${CREATION_SUITE_SHARED_DIR}/UI/CMakeLists.txt")
+    add_subdirectory("${CREATION_SUITE_SHARED_DIR}/UI"
+                     "${CMAKE_CURRENT_BINARY_DIR}/CreationSuiteSharedUI")
+    set(CM_UI_TARGET creation_suite_ui)
+endif()
 
 juce_add_gui_app(CreationMovieApp
     PRODUCT_NAME "Creation Movie"
@@ -36,6 +59,9 @@ target_sources(CreationMovieApp PRIVATE
     Source/Main.cpp
     Source/MainComponent.cpp
     Source/MainComponent.h
+    Source/Shared/CreationSuiteHeaderBar.h
+    Source/Legal/EulaText.cpp
+    Source/Legal/EulaText.h
     Source/Branding.cpp
     Source/Branding.h
 )
@@ -48,6 +74,9 @@ target_compile_definitions(CreationMovieApp PRIVATE
 )
 
 target_link_libraries(CreationMovieApp PRIVATE
+    ${CM_ASSET_SYSTEM_TARGET}
+    ${CM_SERVICES_TARGET}
+    ${CM_UI_TARGET}
     creation_movie_language_host
     juce::juce_gui_extra
     juce::juce_audio_basics
@@ -58,3 +87,23 @@ target_link_libraries(CreationMovieApp PRIVATE
     juce::juce_recommended_warning_flags
 )
 
+install(TARGETS CreationMovieApp
+    RUNTIME DESTINATION .
+    RESOURCE DESTINATION .
+)
+install(FILES README.md LICENSE docs/EULA.txt DESTINATION .)
+
+set(CPACK_PACKAGE_NAME "Creation Movie")
+set(CPACK_PACKAGE_VENDOR "LagDaemon Software")
+set(CPACK_PACKAGE_CONTACT "LagDaemon Software")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Creation Movie")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_FILE_NAME "creation-movie-${CPACK_PACKAGE_VERSION}-win64")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "Creation Movie")
+set(CPACK_GENERATOR "ZIP;WIX")
+set(CPACK_WIX_PROGRAM_MENU_FOLDER "Creation Movie")
+set(CPACK_WIX_LICENSE_RTF "${CMAKE_CURRENT_SOURCE_DIR}/installer/EULA.rtf")
+set(CPACK_PACKAGE_EXECUTABLES "Creation Movie" "Creation Movie")
+set(CPACK_CREATE_DESKTOP_LINKS "Creation Movie")
+
+include(CPack)
