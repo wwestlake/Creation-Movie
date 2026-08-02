@@ -21,8 +21,38 @@ endif()
 include(cmake/CreationSharedLLVM.cmake)
 configure_creation_shared_llvm(CM "Creation Movie")
 
+set(CREATION_SUITE_SHARED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../shared" CACHE PATH "Path to the Creation Suite shared code root")
+
 add_subdirectory("${JUCE_DIR}" juce)
 add_subdirectory(Language)
+
+set(CM_ASSET_SYSTEM_TARGET "")
+if(EXISTS "${CREATION_SUITE_SHARED_DIR}/AssetSystem/CMakeLists.txt")
+    add_subdirectory("${CREATION_SUITE_SHARED_DIR}/AssetSystem"
+                     "${CMAKE_CURRENT_BINARY_DIR}/CreationSuiteSharedAssetSystem")
+    set(CM_ASSET_SYSTEM_TARGET creation_suite_asset_system)
+endif()
+
+set(CM_SERVICES_TARGET "")
+if(EXISTS "${CREATION_SUITE_SHARED_DIR}/Services/CMakeLists.txt")
+    add_subdirectory("${CREATION_SUITE_SHARED_DIR}/Services"
+                     "${CMAKE_CURRENT_BINARY_DIR}/CreationSuiteSharedServices")
+    set(CM_SERVICES_TARGET creation_suite_services)
+endif()
+
+set(CM_UI_TARGET "")
+if(EXISTS "${CREATION_SUITE_SHARED_DIR}/UI/CMakeLists.txt")
+    add_subdirectory("${CREATION_SUITE_SHARED_DIR}/UI"
+                     "${CMAKE_CURRENT_BINARY_DIR}/CreationSuiteSharedUI")
+    set(CM_UI_TARGET creation_suite_ui)
+endif()
+
+set(CM_INTEROP_TARGET "")
+if(EXISTS "${CREATION_SUITE_SHARED_DIR}/Interop/CMakeLists.txt")
+    add_subdirectory("${CREATION_SUITE_SHARED_DIR}/Interop"
+                     "${CMAKE_CURRENT_BINARY_DIR}/CreationSuiteSharedInterop")
+    set(CM_INTEROP_TARGET creation_suite_interop)
+endif()
 
 juce_add_gui_app(CreationMovieApp
     PRODUCT_NAME "Creation Movie"
@@ -50,6 +80,10 @@ target_compile_definitions(CreationMovieApp PRIVATE
 )
 
 target_link_libraries(CreationMovieApp PRIVATE
+    ${CM_ASSET_SYSTEM_TARGET}
+    ${CM_SERVICES_TARGET}
+    ${CM_UI_TARGET}
+    ${CM_INTEROP_TARGET}
     creation_movie_language_host
     juce::juce_gui_extra
     juce::juce_audio_basics
