@@ -65,6 +65,8 @@ juce_add_gui_app(CreationMovieApp
     PRODUCT_NAME "Creation Movie"
     COMPANY_NAME "LagDaemon Software"
     BUNDLE_ID "com.lagdaemon.creationmovie"
+    ICON_BIG "${CREATION_SUITE_SHARED_DIR}/UI/assets/creation_movie.png"
+    ICON_SMALL "${CREATION_SUITE_SHARED_DIR}/UI/assets/creation_movie.png"
 )
 
 # Mirrors the built executable into the workspace-level shared bin
