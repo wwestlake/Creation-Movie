@@ -3,6 +3,12 @@
 #include <JuceHeader.h>
 #include "Legal/EulaText.h"
 
+#include <creation/assets/ProjectContainerService.h>
+#include <creation/assets/ProjectSession.h>
+#include <creation/assets/ProjectWorkspaceService.h>
+#include <creation/suite/SuiteSettings.h>
+#include <creation/suite/SuiteStoragePaths.h>
+
 class MainComponent final : public juce::Component,
                             private juce::Timer
 {
@@ -76,8 +82,9 @@ private:
     void ingestMediaFile(const juce::File& file);
     void openProject();
     void saveProject();
-    void loadProjectFromFile(const juce::File& file);
-    void saveProjectToFile(const juce::File& file);
+    void createNewProject(const juce::String& name);
+    void loadProjectFromSession();
+    void saveProjectToSession();
     void zoomTimeline(double factor);
     void scrollTimeline(double deltaSeconds);
     void addMarkerAtPlayhead();
@@ -142,10 +149,11 @@ private:
     std::vector<TimelineRegion> timelineRegions;
     int selectedAssetIndex = -1;
     int selectedClipIndex = -1;
-    juce::File currentProjectFile;
     std::unique_ptr<juce::FileChooser> importChooser;
     std::unique_ptr<juce::FileChooser> openProjectChooser;
-    std::unique_ptr<juce::FileChooser> saveProjectChooser;
+
+    creation::suite::SuiteSettings suiteSettings;
+    creation::assets::ProjectSession projectSession;
 
     std::unique_ptr<juce::Component> previewSurface;
     std::unique_ptr<juce::Component> timelineCanvas;

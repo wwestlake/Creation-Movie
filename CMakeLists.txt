@@ -33,6 +33,13 @@ if(EXISTS "${CREATION_SUITE_SHARED_DIR}/AssetSystem/CMakeLists.txt")
     set(CM_ASSET_SYSTEM_TARGET creation_suite_asset_system)
 endif()
 
+set(CM_VFS_TARGET "")
+if(EXISTS "${CREATION_SUITE_SHARED_DIR}/VFS/CMakeLists.txt")
+    add_subdirectory("${CREATION_SUITE_SHARED_DIR}/VFS"
+                     "${CMAKE_CURRENT_BINARY_DIR}/CreationSuiteSharedVFS")
+    set(CM_VFS_TARGET creation_suite_vfs)
+endif()
+
 set(CM_SERVICES_TARGET "")
 if(EXISTS "${CREATION_SUITE_SHARED_DIR}/Services/CMakeLists.txt")
     add_subdirectory("${CREATION_SUITE_SHARED_DIR}/Services"

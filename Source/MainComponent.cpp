@@ -5,6 +5,8 @@
 
 namespace
 {
+constexpr const char* kMovieStateEntryPath = "Project/movie-state.json";
+
 juce::Colour panelOutlineColour()
 {
     return creation_movie::branding::accentColour().withAlpha(0.32f);
@@ -930,6 +932,9 @@ private:
 
 MainComponent::MainComponent()
 {
+    juce::String suiteSettingsError;
+    suiteSettings = creation::suite::SuiteSettingsStore().load(suiteSettingsError);
+
     audioFormatManager.registerBasicFormats();
 
     titleLabel.setText("Creation Movie", juce::dontSendNotification);
@@ -1206,15 +1211,30 @@ void MainComponent::ingestMediaFile(const juce::File& file)
 
 void MainComponent::openProject()
 {
+    const auto projectsDirectory = creation::suite::getProjectContainerDirectory(suiteSettings)
+                                       .getChildFile(creation::suite::appDomainFolderName(creation::assets::SuiteAppDomain::movie));
+
     openProjectChooser = std::make_unique<juce::FileChooser>("Open Creation Movie project",
-                                                             currentProjectFile,
-                                                             "*.creationmovie");
+                                                             projectsDirectory,
+                                                             "*.csproj");
     openProjectChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
                                     [this](const juce::FileChooser& chooser)
                                     {
                                         const auto file = chooser.getResult();
                                         if (file.existsAsFile())
-                                            loadProjectFromFile(file);
+                                        {
+                                            juce::String errorMessage;
+                                            if (creation::assets::ProjectWorkspaceService::openProject(file, projectSession, errorMessage))
+                                            {
+                                                loadProjectFromSession();
+                                            }
+                                            else
+                                            {
+                                                juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
+                                                                                            "Could Not Open Project",
+                                                                                            errorMessage);
+                                            }
+                                        }
 
                                         openProjectChooser.reset();
                                     });
@@ -1222,24 +1242,52 @@ void MainComponent::openProject()
 
 void MainComponent::saveProject()
 {
-    auto target = currentProjectFile;
-    if (target == juce::File())
-        target = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile(projectName + ".creationmovie");
+    if (projectSession.isValid())
+    {
+        saveProjectToSession();
+        return;
+    }
 
-    saveProjectChooser = std::make_unique<juce::FileChooser>("Save Creation Movie project",
-                                                             target,
-                                                             "*.creationmovie");
-    saveProjectChooser->launchAsync(juce::FileBrowserComponent::saveMode
-                                        | juce::FileBrowserComponent::canSelectFiles
-                                        | juce::FileBrowserComponent::warnAboutOverwriting,
-                                    [this](const juce::FileChooser& chooser)
-                                    {
-                                        const auto file = chooser.getResult();
-                                        if (file != juce::File())
-                                            saveProjectToFile(file);
+    auto* alertWindow = new juce::AlertWindow("New Movie Project",
+                                              "Name this project:",
+                                              juce::MessageBoxIconType::NoIcon);
+    alertWindow->addTextEditor("projectName", projectName, "Project name:");
+    alertWindow->addButton("Create", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    alertWindow->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
 
-                                        saveProjectChooser.reset();
-                                    });
+    alertWindow->enterModalState(true,
+                                 juce::ModalCallbackFunction::create([this, alertWindow](int result)
+                                 {
+                                     if (result == 1)
+                                     {
+                                         const auto name = alertWindow->getTextEditorContents("projectName").trim();
+                                         if (name.isNotEmpty())
+                                             createNewProject(name);
+                                     }
+                                 }),
+                                 true /* deleteWhenDismissed */);
+}
+
+void MainComponent::createNewProject(const juce::String& name)
+{
+    juce::String errorMessage;
+    if (! creation::assets::ProjectWorkspaceService::createProject(suiteSettings,
+                                                                   creation::assets::SuiteAppDomain::movie,
+                                                                   name,
+                                                                   "1.0.0",
+                                                                   "1.0.0",
+                                                                   projectSession,
+                                                                   errorMessage))
+    {
+        juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
+                                                    "Could Not Create Project",
+                                                    errorMessage);
+        return;
+    }
+
+    projectName = name;
+    projectChipLabel.setText("Project: " + projectName, juce::dontSendNotification);
+    saveProjectToSession();
 }
 
 void MainComponent::zoomTimeline(double factor)
@@ -1337,12 +1385,13 @@ void MainComponent::movePlayheadTo(double timeSeconds)
     updateStatusText();
 }
 
-void MainComponent::loadProjectFromFile(const juce::File& file)
+void MainComponent::loadProjectFromSession()
 {
-    const auto jsonText = file.loadFileAsString();
-    if (jsonText.isEmpty())
+    juce::MemoryBlock stateData;
+    if (! projectSession.readEntry(kMovieStateEntryPath, stateData))
         return;
 
+    const auto jsonText = juce::String::fromUTF8(static_cast<const char*>(stateData.getData()), static_cast<int>(stateData.getSize()));
     const auto parsed = juce::JSON::parse(jsonText);
     if (! parsed.isObject())
         return;
@@ -1351,9 +1400,7 @@ void MainComponent::loadProjectFromFile(const juce::File& file)
     if (root == nullptr)
         return;
 
-    projectName = root->getProperty("projectName").toString().isNotEmpty()
-                      ? root->getProperty("projectName").toString()
-                      : file.getFileNameWithoutExtension();
+    projectName = projectSession.getManifest().projectName;
 
     transportState.framesPerSecond = static_cast<double>(root->getProperty("framesPerSecond"));
     transportState.projectDurationSeconds = static_cast<double>(root->getProperty("projectDurationSeconds"));
@@ -1442,7 +1489,6 @@ void MainComponent::loadProjectFromFile(const juce::File& file)
 
     selectedAssetIndex = -1;
     selectedClipIndex = timelineClips.empty() ? -1 : 0;
-    currentProjectFile = file;
     projectChipLabel.setText("Project: " + projectName, juce::dontSendNotification);
 
     assetLibraryPanel->repaint();
@@ -1452,10 +1498,12 @@ void MainComponent::loadProjectFromFile(const juce::File& file)
     repaint();
 }
 
-void MainComponent::saveProjectToFile(const juce::File& file)
+void MainComponent::saveProjectToSession()
 {
+    if (! projectSession.isValid())
+        return;
+
     juce::DynamicObject::Ptr root = new juce::DynamicObject();
-    root->setProperty("projectName", projectName);
     root->setProperty("framesPerSecond", transportState.framesPerSecond);
     root->setProperty("projectDurationSeconds", transportState.projectDurationSeconds);
     root->setProperty("visibleStartSeconds", transportState.visibleStartSeconds);
@@ -1517,9 +1565,26 @@ void MainComponent::saveProjectToFile(const juce::File& file)
     }
     root->setProperty("regions", juce::var(regionArray));
 
-    file.replaceWithText(juce::JSON::toString(juce::var(root.get()), true));
-    currentProjectFile = file;
-    projectName = file.getFileNameWithoutExtension();
+    const auto jsonText = juce::JSON::toString(juce::var(root.get()), true);
+    const juce::MemoryBlock stateData(jsonText.toRawUTF8(), jsonText.getNumBytesAsUTF8());
+
+    if (! projectSession.writeEntry(kMovieStateEntryPath, stateData))
+    {
+        juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
+                                                    "Could Not Save Project",
+                                                    "Could not write the project state into the container.");
+        return;
+    }
+
+    juce::String errorMessage;
+    if (! projectSession.commit(errorMessage))
+    {
+        juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
+                                                    "Could Not Save Project",
+                                                    errorMessage);
+        return;
+    }
+
     projectChipLabel.setText("Project: " + projectName, juce::dontSendNotification);
 }
 
@@ -1587,7 +1652,6 @@ void MainComponent::seedDemoContent()
     timelineMarkers.clear();
     timelineRegions.clear();
     projectName = "Untitled Movie";
-    currentProjectFile = {};
 
     AssetRecord video;
     video.id = juce::Uuid().toString();
