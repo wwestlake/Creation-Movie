@@ -61,6 +61,16 @@ if(EXISTS "${CREATION_SUITE_SHARED_DIR}/Interop/CMakeLists.txt")
     set(CM_INTEROP_TARGET creation_suite_interop)
 endif()
 
+# Movie's CEL surface -- suite-wide language, not a bespoke per-app one.
+# ce_lang_frontend/node_system build with no LLVM dependency; only the
+# JIT half of shared/CEL needs LLVM, and Movie doesn't link that (yet).
+if(NOT TARGET node_system)
+    add_subdirectory("${CREATION_SUITE_SHARED_DIR}/NodeSystem" CreationSuiteSharedNodeSystem)
+endif()
+if(NOT TARGET ce_lang_frontend)
+    add_subdirectory("${CREATION_SUITE_SHARED_DIR}/CEL" CreationSuiteSharedCel)
+endif()
+
 juce_add_gui_app(CreationMovieApp
     PRODUCT_NAME "Creation Movie"
     COMPANY_NAME "LagDaemon Software"
@@ -104,6 +114,8 @@ target_link_libraries(CreationMovieApp PRIVATE
     ${CM_UI_TARGET}
     ${CM_INTEROP_TARGET}
     creation_movie_language_host
+    ce_lang_frontend
+    node_system
     juce::juce_gui_extra
     juce::juce_audio_basics
     juce::juce_audio_devices
