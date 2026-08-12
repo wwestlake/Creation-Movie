@@ -1211,33 +1211,46 @@ void MainComponent::ingestMediaFile(const juce::File& file)
 
 void MainComponent::openProject()
 {
-    const auto projectsDirectory = creation::suite::getProjectContainerDirectory(suiteSettings)
-                                       .getChildFile(creation::suite::appDomainFolderName(creation::assets::SuiteAppDomain::movie));
+    // Projects are picked from the framework's own catalog, never an OS file browser (there's
+    // no loose .csproj file to browse for anymore -- see docs/architecture/
+    // Suite-Shared-Project-Model.md). A full shared project-browser integration
+    // (SuiteShellController, as Station/Engine use) is its own scope beyond this migration;
+    // this is the minimal correct replacement, matching CreationStation's own project-list
+    // popup menu pattern.
+    juce::String listError;
+    auto availableProjects = creation::assets::ProjectContainerService::listProjects(
+        suiteSettings, creation::assets::SuiteAppDomain::movie, listError);
 
-    openProjectChooser = std::make_unique<juce::FileChooser>("Open Creation Movie project",
-                                                             projectsDirectory,
-                                                             "*.csproj");
-    openProjectChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
-                                    [this](const juce::FileChooser& chooser)
-                                    {
-                                        const auto file = chooser.getResult();
-                                        if (file.existsAsFile())
-                                        {
-                                            juce::String errorMessage;
-                                            if (creation::assets::ProjectWorkspaceService::openProject(file, projectSession, errorMessage))
-                                            {
-                                                loadProjectFromSession();
-                                            }
-                                            else
-                                            {
-                                                juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
-                                                                                            "Could Not Open Project",
-                                                                                            errorMessage);
-                                            }
-                                        }
+    if (availableProjects.isEmpty())
+    {
+        juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,
+                                                    "No Projects Found",
+                                                    listError.isNotEmpty() ? listError : "No Creation Movie projects were found.");
+        return;
+    }
 
-                                        openProjectChooser.reset();
-                                    });
+    juce::PopupMenu menu;
+    for (int index = 0; index < availableProjects.size(); ++index)
+        menu.addItem(index + 1, availableProjects.getReference(index).manifest.projectName);
+
+    menu.showMenuAsync(juce::PopupMenu::Options(), [this, availableProjects](int result)
+    {
+        if (result < 1 || result > availableProjects.size())
+            return;
+
+        const auto& selected = availableProjects.getReference(result - 1);
+        juce::String errorMessage;
+        if (creation::assets::ProjectWorkspaceService::openProject(suiteSettings, selected.projectId, projectSession, errorMessage))
+        {
+            loadProjectFromSession();
+        }
+        else
+        {
+            juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
+                                                        "Could Not Open Project",
+                                                        errorMessage);
+        }
+    });
 }
 
 void MainComponent::saveProject()

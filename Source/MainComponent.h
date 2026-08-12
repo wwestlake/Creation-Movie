@@ -150,7 +150,6 @@ private:
     int selectedAssetIndex = -1;
     int selectedClipIndex = -1;
     std::unique_ptr<juce::FileChooser> importChooser;
-    std::unique_ptr<juce::FileChooser> openProjectChooser;
 
     creation::suite::SuiteSettings suiteSettings;
     creation::assets::ProjectSession projectSession;
