@@ -42,9 +42,10 @@ cmake --build build --config Debug
 This repo uses the same additive LLVM discovery approach as Creation Engine:
 
 - first look for `vcpkg_installed/x64-windows` in this repo
-- otherwise fall back to `D:\000 Creation Engine\vcpkg_installed\x64-windows`
+- otherwise use `CE_LLVM_VCPKG_DIR` if it is set
+- otherwise, when built from the umbrella repo, fall back to `apps/CreationEngine/vcpkg_installed/x64-windows`
 
-That lets Creation Movie share the already-built Windows LLVM install on this machine while still supporting its own manifest-local install later.
+That keeps LLVM discovery tied to the current checkout instead of a machine-specific personal clone path.
 
 ## Status
 

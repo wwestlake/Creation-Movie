@@ -7,15 +7,14 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+include("${CMAKE_CURRENT_SOURCE_DIR}/../../shared/CMake/CreationSuiteBuildSettings.cmake")
+creation_suite_require_juce()
+
 if(MSVC)
     string(APPEND CMAKE_CXX_FLAGS_RELEASE " /Zi")
     string(APPEND CMAKE_EXE_LINKER_FLAGS_RELEASE " /DEBUG /OPT:REF /OPT:ICF")
     string(APPEND CMAKE_SHARED_LINKER_FLAGS_RELEASE " /DEBUG /OPT:REF /OPT:ICF")
     string(APPEND CMAKE_MODULE_LINKER_FLAGS_RELEASE " /DEBUG /OPT:REF /OPT:ICF")
-endif()
-
-if(NOT DEFINED JUCE_DIR)
-    message(FATAL_ERROR "Set JUCE_DIR to your JUCE root directory before configuring (same JUCE checkout Creation Station and Creation Engine use).")
 endif()
 
 include(cmake/CreationSharedLLVM.cmake)
@@ -28,7 +27,11 @@ juce_add_gui_app(CreationMovieApp
     PRODUCT_NAME "Creation Movie"
     COMPANY_NAME "LagDaemon Software"
     BUNDLE_ID "com.lagdaemon.creationmovie"
+    ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/../../shared/UI/assets/creation_movie.png"
+    ICON_SMALL "${CMAKE_CURRENT_SOURCE_DIR}/../../shared/UI/assets/creation_movie.png"
 )
+
+creation_suite_add_shared_bin_copy(CreationMovieApp)
 
 juce_generate_juce_header(CreationMovieApp)
 

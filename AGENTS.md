@@ -2,10 +2,10 @@
 
 ## Build Output
 
-- Always build Creation Movie in the existing `D:\000 Creation Movie\build` directory.
-- Do not create alternate or scratch build folders (`build-test`, `build-clean`, or similar).
-- If a different build directory ever seems necessary, stop and discuss it with the user before doing anything.
-- Configure with `-DJUCE_DIR=D:\JUCE2\JUCE` so Creation Movie stays on the same JUCE checkout as Creation Station and Creation Engine.
+- Build Creation Movie in this repo's own `build/` directory.
+- Do not point builds at the user's personal clones or another agent's build tree.
+- Use the repo-root presets or `scripts/Build-Suite.ps1` from the umbrella repo when possible so all agents configure this app the same way.
+- Set `JUCE_DIR` in the environment or pass `-DJUCE_DIR=<path-to-JUCE>` explicitly when configuring.
 
 ## Shared Build Environment
 
