@@ -8,9 +8,11 @@
 #include <creation/assets/ProjectWorkspaceService.h>
 #include <creation/suite/SuiteSettings.h>
 #include <creation/suite/SuiteStoragePaths.h>
+#include <CreationDock/DockManager.h>
 
 class MainComponent final : public juce::Component,
-                            private juce::Timer
+                            private juce::Timer,
+                            private juce::MenuBarModel
 {
 public:
     enum class AssetKind
@@ -99,6 +101,12 @@ private:
 
     void timerCallback() override;
 
+    juce::StringArray getMenuBarNames() override;
+    juce::PopupMenu getMenuForIndex(int topLevelMenuIndex, const juce::String&) override;
+    void menuItemSelected(int menuItemID, int topLevelMenuIndex) override;
+    void initialiseDockingWorkspace();
+    void toggleDockPanel(const juce::String& panelId, CreationDock::DockTargetZone fallbackZone);
+
     void updateTransportButtons();
     void updateStatusText();
     void showEulaWindow();
@@ -160,6 +168,9 @@ private:
     std::unique_ptr<juce::Component> inspectorPanel;
     std::unique_ptr<juce::DocumentWindow> previewWindow;
     std::unique_ptr<juce::DocumentWindow> eulaWindow;
+
+    std::unique_ptr<juce::MenuBarComponent> menuBar;
+    std::unique_ptr<CreationDock::DockManager> dockManager;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };

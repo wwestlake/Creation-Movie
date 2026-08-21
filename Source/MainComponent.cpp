@@ -7,6 +7,39 @@ namespace
 {
 constexpr const char* kMovieStateEntryPath = "Project/movie-state.json";
 
+// Wraps an existing component (not owned) as a dock panel's content, filling
+// whatever bounds the dock zone/tab gives it. previewSurface/timelineCanvas/
+// assetLibraryPanel/inspectorPanel stay owned by MainComponent's own
+// unique_ptrs -- this only ever holds a reference, never takes ownership,
+// since ~25 call sites elsewhere in this file dereference those pointers directly.
+class NonOwningPanelHost final : public juce::Component
+{
+public:
+    explicit NonOwningPanelHost(juce::Component& contentToHost) : content(contentToHost)
+    {
+        addAndMakeVisible(content);
+    }
+
+    void resized() override
+    {
+        content.setBounds(getLocalBounds());
+    }
+
+private:
+    juce::Component& content;
+};
+
+const juce::String panelIdPreview = "preview";
+const juce::String panelIdTimeline = "timeline";
+const juce::String panelIdLibrary = "library";
+const juce::String panelIdInspector = "inspector";
+
+constexpr int menuIdPanelPreview = 3001;
+constexpr int menuIdPanelTimeline = 3002;
+constexpr int menuIdPanelLibrary = 3003;
+constexpr int menuIdPanelInspector = 3004;
+constexpr int menuIdResetLayout = 3005;
+
 juce::Colour panelOutlineColour()
 {
     return creation_movie::branding::accentColour().withAlpha(0.32f);
@@ -1039,13 +1072,30 @@ MainComponent::MainComponent()
     assetLibraryPanel = std::make_unique<AssetLibraryPanel>(assets, selectedAssetIndex, [this](int assetIndex) { selectAsset(assetIndex); });
     inspectorPanel = std::make_unique<InspectorPanel>(transportState, assets, timelineClips, selectedAssetIndex, selectedClipIndex);
 
-    addAndMakeVisible(*previewSurface);
-    addAndMakeVisible(*timelineCanvas);
-    addAndMakeVisible(*assetLibraryPanel);
-    addAndMakeVisible(*inspectorPanel);
+    // previewSurface/timelineCanvas/assetLibraryPanel/inspectorPanel are reparented
+    // into dock panels below (see initialiseDockingWorkspace), not added directly here.
 
     updateTransportButtons();
     updateStatusText();
+
+    menuBar = std::make_unique<juce::MenuBarComponent>(static_cast<juce::MenuBarModel*>(this));
+    // Nothing in this app sets a suite-wide dark LookAndFeel, so MenuBarComponent
+    // falls back to LookAndFeel_V4::drawMenuBarItem/drawMenuBarBackground, which key
+    // off TextButton colour ids (not PopupMenu's) -- the default scheme renders dark
+    // text on a dark bar, invisible against this app's dark theme without this.
+    menuBar->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1c2230));
+    menuBar->setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xff2a3244));
+    menuBar->setColour(juce::TextButton::textColourOffId, juce::Colours::white);
+    menuBar->setColour(juce::TextButton::textColourOnId, juce::Colours::white);
+    addAndMakeVisible(*menuBar);
+
+    dockManager = std::make_unique<CreationDock::DockManager>(*this);
+    addAndMakeVisible(*dockManager);
+    initialiseDockingWorkspace();
+    // setSize() below fires resized() immediately; menuBar/dockManager must already
+    // exist and be registered before that happens, or they're silently left at zero
+    // bounds (addAndMakeVisible alone doesn't trigger a layout pass).
+    resized();
 
     setSize(1480, 920);
     startTimerHz(30);
@@ -1127,18 +1177,92 @@ void MainComponent::resized()
     previewButton.setBounds(controlRow.removeFromLeft(150).reduced(4, 2));
     eulaButton.setBounds(controlRow.removeFromLeft(64).reduced(4, 2));
 
-    auto upperRow = area.removeFromTop(352);
-    auto leftColumn = upperRow.removeFromLeft(322);
-    upperRow.removeFromLeft(14);
-    auto rightColumn = upperRow.removeFromRight(316);
-    upperRow.removeFromRight(14);
+    if (menuBar != nullptr)
+        menuBar->setBounds(area.removeFromTop(28));
 
-    assetLibraryPanel->setBounds(leftColumn);
-    inspectorPanel->setBounds(rightColumn);
-    previewSurface->setBounds(upperRow);
+    area.removeFromTop(8);
 
-    area.removeFromTop(14);
-    timelineCanvas->setBounds(area);
+    if (dockManager != nullptr)
+        dockManager->setBounds(area);
+}
+
+juce::StringArray MainComponent::getMenuBarNames()
+{
+    return { "Panels", "Help" };
+}
+
+juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce::String&)
+{
+    juce::PopupMenu menu;
+
+    if (topLevelMenuIndex == 0)
+    {
+        const auto isOpen = [this](const juce::String& id)
+        {
+            return dockManager != nullptr && dockManager->isPanelOpen(id);
+        };
+
+        menu.addItem(menuIdPanelPreview, "Program Monitor", true, isOpen(panelIdPreview));
+        menu.addItem(menuIdPanelTimeline, "Timeline", true, isOpen(panelIdTimeline));
+        menu.addItem(menuIdPanelLibrary, "Media Library", true, isOpen(panelIdLibrary));
+        menu.addItem(menuIdPanelInspector, "Inspector", true, isOpen(panelIdInspector));
+        menu.addSeparator();
+        menu.addItem(menuIdResetLayout, "Reset Dock Layout");
+        return menu;
+    }
+
+    menu.addItem(1, "EULA");
+    return menu;
+}
+
+void MainComponent::menuItemSelected(int menuItemID, int topLevelMenuIndex)
+{
+    if (topLevelMenuIndex == 0)
+    {
+        switch (menuItemID)
+        {
+            case menuIdPanelPreview:   toggleDockPanel(panelIdPreview, CreationDock::DockTargetZone::CenterTab); break;
+            case menuIdPanelTimeline:  toggleDockPanel(panelIdTimeline, CreationDock::DockTargetZone::Bottom); break;
+            case menuIdPanelLibrary:   toggleDockPanel(panelIdLibrary, CreationDock::DockTargetZone::Left); break;
+            case menuIdPanelInspector: toggleDockPanel(panelIdInspector, CreationDock::DockTargetZone::Right); break;
+            case menuIdResetLayout:    if (dockManager != nullptr) dockManager->resetLayout(); break;
+            default: break;
+        }
+
+        menuItemsChanged();
+        return;
+    }
+
+    if (menuItemID == 1)
+        showEulaWindow();
+}
+
+void MainComponent::initialiseDockingWorkspace()
+{
+    if (dockManager == nullptr)
+        return;
+
+    dockManager->registerPanel(panelIdLibrary, "Media Library",
+        std::make_unique<NonOwningPanelHost>(*assetLibraryPanel), CreationDock::DockTargetZone::Left);
+    dockManager->registerPanel(panelIdPreview, "Program Monitor",
+        std::make_unique<NonOwningPanelHost>(*previewSurface), CreationDock::DockTargetZone::CenterTab);
+    dockManager->registerPanel(panelIdInspector, "Inspector",
+        std::make_unique<NonOwningPanelHost>(*inspectorPanel), CreationDock::DockTargetZone::Right);
+    dockManager->registerPanel(panelIdTimeline, "Timeline",
+        std::make_unique<NonOwningPanelHost>(*timelineCanvas), CreationDock::DockTargetZone::Bottom);
+}
+
+void MainComponent::toggleDockPanel(const juce::String& panelId, CreationDock::DockTargetZone fallbackZone)
+{
+    if (dockManager == nullptr)
+        return;
+
+    if (dockManager->isPanelOpen(panelId))
+        dockManager->closePanel(panelId);
+    else
+        dockManager->showPanel(panelId, fallbackZone);
+
+    menuItemsChanged();
 }
 
 void MainComponent::importMediaFiles()
