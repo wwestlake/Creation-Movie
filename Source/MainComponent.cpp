@@ -5,6 +5,41 @@
 
 namespace
 {
+constexpr const char* kMovieStateEntryPath = "Project/movie-state.json";
+
+// Wraps an existing component (not owned) as a dock panel's content, filling
+// whatever bounds the dock zone/tab gives it. previewSurface/timelineCanvas/
+// assetLibraryPanel/inspectorPanel stay owned by MainComponent's own
+// unique_ptrs -- this only ever holds a reference, never takes ownership,
+// since ~25 call sites elsewhere in this file dereference those pointers directly.
+class NonOwningPanelHost final : public juce::Component
+{
+public:
+    explicit NonOwningPanelHost(juce::Component& contentToHost) : content(contentToHost)
+    {
+        addAndMakeVisible(content);
+    }
+
+    void resized() override
+    {
+        content.setBounds(getLocalBounds());
+    }
+
+private:
+    juce::Component& content;
+};
+
+const juce::String panelIdPreview = "preview";
+const juce::String panelIdTimeline = "timeline";
+const juce::String panelIdLibrary = "library";
+const juce::String panelIdInspector = "inspector";
+
+constexpr int menuIdPanelPreview = 3001;
+constexpr int menuIdPanelTimeline = 3002;
+constexpr int menuIdPanelLibrary = 3003;
+constexpr int menuIdPanelInspector = 3004;
+constexpr int menuIdResetLayout = 3005;
+
 juce::Colour panelOutlineColour()
 {
     return creation_movie::branding::accentColour().withAlpha(0.32f);
@@ -930,6 +965,9 @@ private:
 
 MainComponent::MainComponent()
 {
+    juce::String suiteSettingsError;
+    suiteSettings = creation::suite::SuiteSettingsStore().load(suiteSettingsError);
+
     audioFormatManager.registerBasicFormats();
 
     titleLabel.setText("Creation Movie", juce::dontSendNotification);
@@ -1034,13 +1072,30 @@ MainComponent::MainComponent()
     assetLibraryPanel = std::make_unique<AssetLibraryPanel>(assets, selectedAssetIndex, [this](int assetIndex) { selectAsset(assetIndex); });
     inspectorPanel = std::make_unique<InspectorPanel>(transportState, assets, timelineClips, selectedAssetIndex, selectedClipIndex);
 
-    addAndMakeVisible(*previewSurface);
-    addAndMakeVisible(*timelineCanvas);
-    addAndMakeVisible(*assetLibraryPanel);
-    addAndMakeVisible(*inspectorPanel);
+    // previewSurface/timelineCanvas/assetLibraryPanel/inspectorPanel are reparented
+    // into dock panels below (see initialiseDockingWorkspace), not added directly here.
 
     updateTransportButtons();
     updateStatusText();
+
+    menuBar = std::make_unique<juce::MenuBarComponent>(static_cast<juce::MenuBarModel*>(this));
+    // Nothing in this app sets a suite-wide dark LookAndFeel, so MenuBarComponent
+    // falls back to LookAndFeel_V4::drawMenuBarItem/drawMenuBarBackground, which key
+    // off TextButton colour ids (not PopupMenu's) -- the default scheme renders dark
+    // text on a dark bar, invisible against this app's dark theme without this.
+    menuBar->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1c2230));
+    menuBar->setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xff2a3244));
+    menuBar->setColour(juce::TextButton::textColourOffId, juce::Colours::white);
+    menuBar->setColour(juce::TextButton::textColourOnId, juce::Colours::white);
+    addAndMakeVisible(*menuBar);
+
+    dockManager = std::make_unique<CreationDock::DockManager>(*this);
+    addAndMakeVisible(*dockManager);
+    initialiseDockingWorkspace();
+    // setSize() below fires resized() immediately; menuBar/dockManager must already
+    // exist and be registered before that happens, or they're silently left at zero
+    // bounds (addAndMakeVisible alone doesn't trigger a layout pass).
+    resized();
 
     setSize(1480, 920);
     startTimerHz(30);
@@ -1122,18 +1177,92 @@ void MainComponent::resized()
     previewButton.setBounds(controlRow.removeFromLeft(150).reduced(4, 2));
     eulaButton.setBounds(controlRow.removeFromLeft(64).reduced(4, 2));
 
-    auto upperRow = area.removeFromTop(352);
-    auto leftColumn = upperRow.removeFromLeft(322);
-    upperRow.removeFromLeft(14);
-    auto rightColumn = upperRow.removeFromRight(316);
-    upperRow.removeFromRight(14);
+    if (menuBar != nullptr)
+        menuBar->setBounds(area.removeFromTop(28));
 
-    assetLibraryPanel->setBounds(leftColumn);
-    inspectorPanel->setBounds(rightColumn);
-    previewSurface->setBounds(upperRow);
+    area.removeFromTop(8);
 
-    area.removeFromTop(14);
-    timelineCanvas->setBounds(area);
+    if (dockManager != nullptr)
+        dockManager->setBounds(area);
+}
+
+juce::StringArray MainComponent::getMenuBarNames()
+{
+    return { "Panels", "Help" };
+}
+
+juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce::String&)
+{
+    juce::PopupMenu menu;
+
+    if (topLevelMenuIndex == 0)
+    {
+        const auto isOpen = [this](const juce::String& id)
+        {
+            return dockManager != nullptr && dockManager->isPanelOpen(id);
+        };
+
+        menu.addItem(menuIdPanelPreview, "Program Monitor", true, isOpen(panelIdPreview));
+        menu.addItem(menuIdPanelTimeline, "Timeline", true, isOpen(panelIdTimeline));
+        menu.addItem(menuIdPanelLibrary, "Media Library", true, isOpen(panelIdLibrary));
+        menu.addItem(menuIdPanelInspector, "Inspector", true, isOpen(panelIdInspector));
+        menu.addSeparator();
+        menu.addItem(menuIdResetLayout, "Reset Dock Layout");
+        return menu;
+    }
+
+    menu.addItem(1, "EULA");
+    return menu;
+}
+
+void MainComponent::menuItemSelected(int menuItemID, int topLevelMenuIndex)
+{
+    if (topLevelMenuIndex == 0)
+    {
+        switch (menuItemID)
+        {
+            case menuIdPanelPreview:   toggleDockPanel(panelIdPreview, CreationDock::DockTargetZone::CenterTab); break;
+            case menuIdPanelTimeline:  toggleDockPanel(panelIdTimeline, CreationDock::DockTargetZone::Bottom); break;
+            case menuIdPanelLibrary:   toggleDockPanel(panelIdLibrary, CreationDock::DockTargetZone::Left); break;
+            case menuIdPanelInspector: toggleDockPanel(panelIdInspector, CreationDock::DockTargetZone::Right); break;
+            case menuIdResetLayout:    if (dockManager != nullptr) dockManager->resetLayout(); break;
+            default: break;
+        }
+
+        menuItemsChanged();
+        return;
+    }
+
+    if (menuItemID == 1)
+        showEulaWindow();
+}
+
+void MainComponent::initialiseDockingWorkspace()
+{
+    if (dockManager == nullptr)
+        return;
+
+    dockManager->registerPanel(panelIdLibrary, "Media Library",
+        std::make_unique<NonOwningPanelHost>(*assetLibraryPanel), CreationDock::DockTargetZone::Left);
+    dockManager->registerPanel(panelIdPreview, "Program Monitor",
+        std::make_unique<NonOwningPanelHost>(*previewSurface), CreationDock::DockTargetZone::CenterTab);
+    dockManager->registerPanel(panelIdInspector, "Inspector",
+        std::make_unique<NonOwningPanelHost>(*inspectorPanel), CreationDock::DockTargetZone::Right);
+    dockManager->registerPanel(panelIdTimeline, "Timeline",
+        std::make_unique<NonOwningPanelHost>(*timelineCanvas), CreationDock::DockTargetZone::Bottom);
+}
+
+void MainComponent::toggleDockPanel(const juce::String& panelId, CreationDock::DockTargetZone fallbackZone)
+{
+    if (dockManager == nullptr)
+        return;
+
+    if (dockManager->isPanelOpen(panelId))
+        dockManager->closePanel(panelId);
+    else
+        dockManager->showPanel(panelId, fallbackZone);
+
+    menuItemsChanged();
 }
 
 void MainComponent::importMediaFiles()
@@ -1206,40 +1335,96 @@ void MainComponent::ingestMediaFile(const juce::File& file)
 
 void MainComponent::openProject()
 {
-    openProjectChooser = std::make_unique<juce::FileChooser>("Open Creation Movie project",
-                                                             currentProjectFile,
-                                                             "*.creationmovie");
-    openProjectChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
-                                    [this](const juce::FileChooser& chooser)
-                                    {
-                                        const auto file = chooser.getResult();
-                                        if (file.existsAsFile())
-                                            loadProjectFromFile(file);
+    // Projects are picked from the framework's own catalog, never an OS file browser (there's
+    // no loose .csproj file to browse for anymore -- see docs/architecture/
+    // Suite-Shared-Project-Model.md). A full shared project-browser integration
+    // (SuiteShellController, as Station/Engine use) is its own scope beyond this migration;
+    // this is the minimal correct replacement, matching CreationStation's own project-list
+    // popup menu pattern.
+    juce::String listError;
+    auto availableProjects = creation::assets::ProjectContainerService::listProjects(
+        suiteSettings, creation::assets::SuiteAppDomain::movie, listError);
 
-                                        openProjectChooser.reset();
-                                    });
+    if (availableProjects.isEmpty())
+    {
+        juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,
+                                                    "No Projects Found",
+                                                    listError.isNotEmpty() ? listError : "No Creation Movie projects were found.");
+        return;
+    }
+
+    juce::PopupMenu menu;
+    for (int index = 0; index < availableProjects.size(); ++index)
+        menu.addItem(index + 1, availableProjects.getReference(index).manifest.projectName);
+
+    menu.showMenuAsync(juce::PopupMenu::Options(), [this, availableProjects](int result)
+    {
+        if (result < 1 || result > availableProjects.size())
+            return;
+
+        const auto& selected = availableProjects.getReference(result - 1);
+        juce::String errorMessage;
+        if (creation::assets::ProjectWorkspaceService::openProject(suiteSettings, selected.projectId, projectSession, errorMessage))
+        {
+            loadProjectFromSession();
+        }
+        else
+        {
+            juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
+                                                        "Could Not Open Project",
+                                                        errorMessage);
+        }
+    });
 }
 
 void MainComponent::saveProject()
 {
-    auto target = currentProjectFile;
-    if (target == juce::File())
-        target = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile(projectName + ".creationmovie");
+    if (projectSession.isValid())
+    {
+        saveProjectToSession();
+        return;
+    }
 
-    saveProjectChooser = std::make_unique<juce::FileChooser>("Save Creation Movie project",
-                                                             target,
-                                                             "*.creationmovie");
-    saveProjectChooser->launchAsync(juce::FileBrowserComponent::saveMode
-                                        | juce::FileBrowserComponent::canSelectFiles
-                                        | juce::FileBrowserComponent::warnAboutOverwriting,
-                                    [this](const juce::FileChooser& chooser)
-                                    {
-                                        const auto file = chooser.getResult();
-                                        if (file != juce::File())
-                                            saveProjectToFile(file);
+    auto* alertWindow = new juce::AlertWindow("New Movie Project",
+                                              "Name this project:",
+                                              juce::MessageBoxIconType::NoIcon);
+    alertWindow->addTextEditor("projectName", projectName, "Project name:");
+    alertWindow->addButton("Create", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    alertWindow->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
 
-                                        saveProjectChooser.reset();
-                                    });
+    alertWindow->enterModalState(true,
+                                 juce::ModalCallbackFunction::create([this, alertWindow](int result)
+                                 {
+                                     if (result == 1)
+                                     {
+                                         const auto name = alertWindow->getTextEditorContents("projectName").trim();
+                                         if (name.isNotEmpty())
+                                             createNewProject(name);
+                                     }
+                                 }),
+                                 true /* deleteWhenDismissed */);
+}
+
+void MainComponent::createNewProject(const juce::String& name)
+{
+    juce::String errorMessage;
+    if (! creation::assets::ProjectWorkspaceService::createProject(suiteSettings,
+                                                                   creation::assets::SuiteAppDomain::movie,
+                                                                   name,
+                                                                   "1.0.0",
+                                                                   "1.0.0",
+                                                                   projectSession,
+                                                                   errorMessage))
+    {
+        juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
+                                                    "Could Not Create Project",
+                                                    errorMessage);
+        return;
+    }
+
+    projectName = name;
+    projectChipLabel.setText("Project: " + projectName, juce::dontSendNotification);
+    saveProjectToSession();
 }
 
 void MainComponent::zoomTimeline(double factor)
@@ -1337,12 +1522,13 @@ void MainComponent::movePlayheadTo(double timeSeconds)
     updateStatusText();
 }
 
-void MainComponent::loadProjectFromFile(const juce::File& file)
+void MainComponent::loadProjectFromSession()
 {
-    const auto jsonText = file.loadFileAsString();
-    if (jsonText.isEmpty())
+    juce::MemoryBlock stateData;
+    if (! projectSession.readEntry(kMovieStateEntryPath, stateData))
         return;
 
+    const auto jsonText = juce::String::fromUTF8(static_cast<const char*>(stateData.getData()), static_cast<int>(stateData.getSize()));
     const auto parsed = juce::JSON::parse(jsonText);
     if (! parsed.isObject())
         return;
@@ -1351,9 +1537,7 @@ void MainComponent::loadProjectFromFile(const juce::File& file)
     if (root == nullptr)
         return;
 
-    projectName = root->getProperty("projectName").toString().isNotEmpty()
-                      ? root->getProperty("projectName").toString()
-                      : file.getFileNameWithoutExtension();
+    projectName = projectSession.getManifest().projectName;
 
     transportState.framesPerSecond = static_cast<double>(root->getProperty("framesPerSecond"));
     transportState.projectDurationSeconds = static_cast<double>(root->getProperty("projectDurationSeconds"));
@@ -1442,7 +1626,6 @@ void MainComponent::loadProjectFromFile(const juce::File& file)
 
     selectedAssetIndex = -1;
     selectedClipIndex = timelineClips.empty() ? -1 : 0;
-    currentProjectFile = file;
     projectChipLabel.setText("Project: " + projectName, juce::dontSendNotification);
 
     assetLibraryPanel->repaint();
@@ -1452,10 +1635,12 @@ void MainComponent::loadProjectFromFile(const juce::File& file)
     repaint();
 }
 
-void MainComponent::saveProjectToFile(const juce::File& file)
+void MainComponent::saveProjectToSession()
 {
+    if (! projectSession.isValid())
+        return;
+
     juce::DynamicObject::Ptr root = new juce::DynamicObject();
-    root->setProperty("projectName", projectName);
     root->setProperty("framesPerSecond", transportState.framesPerSecond);
     root->setProperty("projectDurationSeconds", transportState.projectDurationSeconds);
     root->setProperty("visibleStartSeconds", transportState.visibleStartSeconds);
@@ -1517,9 +1702,26 @@ void MainComponent::saveProjectToFile(const juce::File& file)
     }
     root->setProperty("regions", juce::var(regionArray));
 
-    file.replaceWithText(juce::JSON::toString(juce::var(root.get()), true));
-    currentProjectFile = file;
-    projectName = file.getFileNameWithoutExtension();
+    const auto jsonText = juce::JSON::toString(juce::var(root.get()), true);
+    const juce::MemoryBlock stateData(jsonText.toRawUTF8(), jsonText.getNumBytesAsUTF8());
+
+    if (! projectSession.writeEntry(kMovieStateEntryPath, stateData))
+    {
+        juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
+                                                    "Could Not Save Project",
+                                                    "Could not write the project state into the container.");
+        return;
+    }
+
+    juce::String errorMessage;
+    if (! projectSession.commit(errorMessage))
+    {
+        juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
+                                                    "Could Not Save Project",
+                                                    errorMessage);
+        return;
+    }
+
     projectChipLabel.setText("Project: " + projectName, juce::dontSendNotification);
 }
 
@@ -1587,7 +1789,6 @@ void MainComponent::seedDemoContent()
     timelineMarkers.clear();
     timelineRegions.clear();
     projectName = "Untitled Movie";
-    currentProjectFile = {};
 
     AssetRecord video;
     video.id = juce::Uuid().toString();

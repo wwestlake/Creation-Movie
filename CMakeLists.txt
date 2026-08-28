@@ -21,16 +21,84 @@ endif()
 include(cmake/CreationSharedLLVM.cmake)
 configure_creation_shared_llvm(CM "Creation Movie")
 
+set(CREATION_SUITE_SHARED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../shared" CACHE PATH "Path to the Creation Suite shared code root")
+
 add_subdirectory("${JUCE_DIR}" juce)
 add_subdirectory(Language)
+
+set(CM_ASSET_SYSTEM_TARGET "")
+if(EXISTS "${CREATION_SUITE_SHARED_DIR}/AssetSystem/CMakeLists.txt")
+    add_subdirectory("${CREATION_SUITE_SHARED_DIR}/AssetSystem"
+                     "${CMAKE_CURRENT_BINARY_DIR}/CreationSuiteSharedAssetSystem")
+    set(CM_ASSET_SYSTEM_TARGET creation_suite_asset_system)
+endif()
+
+set(CM_VFS_TARGET "")
+if(EXISTS "${CREATION_SUITE_SHARED_DIR}/VFS/CMakeLists.txt")
+    add_subdirectory("${CREATION_SUITE_SHARED_DIR}/VFS"
+                     "${CMAKE_CURRENT_BINARY_DIR}/CreationSuiteSharedVFS")
+    set(CM_VFS_TARGET creation_suite_vfs)
+endif()
+
+set(CM_SERVICES_TARGET "")
+if(EXISTS "${CREATION_SUITE_SHARED_DIR}/Services/CMakeLists.txt")
+    add_subdirectory("${CREATION_SUITE_SHARED_DIR}/Services"
+                     "${CMAKE_CURRENT_BINARY_DIR}/CreationSuiteSharedServices")
+    set(CM_SERVICES_TARGET creation_suite_services)
+endif()
+
+set(CM_UI_TARGET "")
+if(EXISTS "${CREATION_SUITE_SHARED_DIR}/UI/CMakeLists.txt")
+    add_subdirectory("${CREATION_SUITE_SHARED_DIR}/UI"
+                     "${CMAKE_CURRENT_BINARY_DIR}/CreationSuiteSharedUI")
+    set(CM_UI_TARGET creation_suite_ui)
+endif()
+
+set(CM_INTEROP_TARGET "")
+if(EXISTS "${CREATION_SUITE_SHARED_DIR}/Interop/CMakeLists.txt")
+    add_subdirectory("${CREATION_SUITE_SHARED_DIR}/Interop"
+                     "${CMAKE_CURRENT_BINARY_DIR}/CreationSuiteSharedInterop")
+    set(CM_INTEROP_TARGET creation_suite_interop)
+endif()
+
+if(EXISTS "${CREATION_SUITE_SHARED_DIR}/JuceDocking/CMakeLists.txt")
+    add_subdirectory("${CREATION_SUITE_SHARED_DIR}/JuceDocking"
+                     "${CMAKE_CURRENT_BINARY_DIR}/CreationSuiteSharedDocking")
+endif()
+
+# Movie's CEL surface -- suite-wide language, not a bespoke per-app one.
+# ce_lang_frontend/node_system build with no LLVM dependency; only the
+# JIT half of shared/CEL needs LLVM, and Movie doesn't link that (yet).
+if(NOT TARGET node_system)
+    add_subdirectory("${CREATION_SUITE_SHARED_DIR}/NodeSystem" CreationSuiteSharedNodeSystem)
+endif()
+if(NOT TARGET ce_lang_frontend)
+    add_subdirectory("${CREATION_SUITE_SHARED_DIR}/CEL" CreationSuiteSharedCel)
+endif()
 
 juce_add_gui_app(CreationMovieApp
     PRODUCT_NAME "Creation Movie"
     COMPANY_NAME "LagDaemon Software"
     BUNDLE_ID "com.lagdaemon.creationmovie"
+    ICON_BIG "${CREATION_SUITE_SHARED_DIR}/UI/assets/creation_movie.png"
+    ICON_SMALL "${CREATION_SUITE_SHARED_DIR}/UI/assets/creation_movie.png"
+)
+
+# Mirrors the built executable into the workspace-level shared bin
+# directory (D:\CreationSuite-Workspaces\claude-<config>-bin) so it's
+# reachable at a stable path without needing OS symlink privileges.
+# Every suite agent does this for its own repo -- see AGENTS.md.
+add_custom_command(TARGET CreationMovieApp POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "D:/CreationSuite-Workspaces/claude-$<LOWER_CASE:$<CONFIG>>-bin"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:CreationMovieApp>" "D:/CreationSuite-Workspaces/claude-$<LOWER_CASE:$<CONFIG>>-bin/"
+    COMMENT "Copying CreationMovieApp to the shared claude bin directory"
 )
 
 juce_generate_juce_header(CreationMovieApp)
+
+target_include_directories(CreationMovieApp PRIVATE
+    "${CREATION_SUITE_SHARED_DIR}/JuceDocking/include"
+)
 
 target_sources(CreationMovieApp PRIVATE
     Source/Main.cpp
@@ -50,7 +118,14 @@ target_compile_definitions(CreationMovieApp PRIVATE
 )
 
 target_link_libraries(CreationMovieApp PRIVATE
+    ${CM_ASSET_SYSTEM_TARGET}
+    ${CM_SERVICES_TARGET}
+    ${CM_UI_TARGET}
+    ${CM_INTEROP_TARGET}
     creation_movie_language_host
+    ce_lang_frontend
+    node_system
+    CreationDock
     juce::juce_gui_extra
     juce::juce_audio_basics
     juce::juce_audio_devices

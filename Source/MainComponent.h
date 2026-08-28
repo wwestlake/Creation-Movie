@@ -3,8 +3,16 @@
 #include <JuceHeader.h>
 #include "Legal/EulaText.h"
 
+#include <creation/assets/ProjectContainerService.h>
+#include <creation/assets/ProjectSession.h>
+#include <creation/assets/ProjectWorkspaceService.h>
+#include <creation/suite/SuiteSettings.h>
+#include <creation/suite/SuiteStoragePaths.h>
+#include <CreationDock/DockManager.h>
+
 class MainComponent final : public juce::Component,
-                            private juce::Timer
+                            private juce::Timer,
+                            private juce::MenuBarModel
 {
 public:
     enum class AssetKind
@@ -76,8 +84,9 @@ private:
     void ingestMediaFile(const juce::File& file);
     void openProject();
     void saveProject();
-    void loadProjectFromFile(const juce::File& file);
-    void saveProjectToFile(const juce::File& file);
+    void createNewProject(const juce::String& name);
+    void loadProjectFromSession();
+    void saveProjectToSession();
     void zoomTimeline(double factor);
     void scrollTimeline(double deltaSeconds);
     void addMarkerAtPlayhead();
@@ -91,6 +100,12 @@ private:
     void seedDemoContent();
 
     void timerCallback() override;
+
+    juce::StringArray getMenuBarNames() override;
+    juce::PopupMenu getMenuForIndex(int topLevelMenuIndex, const juce::String&) override;
+    void menuItemSelected(int menuItemID, int topLevelMenuIndex) override;
+    void initialiseDockingWorkspace();
+    void toggleDockPanel(const juce::String& panelId, CreationDock::DockTargetZone fallbackZone);
 
     void updateTransportButtons();
     void updateStatusText();
@@ -142,10 +157,10 @@ private:
     std::vector<TimelineRegion> timelineRegions;
     int selectedAssetIndex = -1;
     int selectedClipIndex = -1;
-    juce::File currentProjectFile;
     std::unique_ptr<juce::FileChooser> importChooser;
-    std::unique_ptr<juce::FileChooser> openProjectChooser;
-    std::unique_ptr<juce::FileChooser> saveProjectChooser;
+
+    creation::suite::SuiteSettings suiteSettings;
+    creation::assets::ProjectSession projectSession;
 
     std::unique_ptr<juce::Component> previewSurface;
     std::unique_ptr<juce::Component> timelineCanvas;
@@ -153,6 +168,9 @@ private:
     std::unique_ptr<juce::Component> inspectorPanel;
     std::unique_ptr<juce::DocumentWindow> previewWindow;
     std::unique_ptr<juce::DocumentWindow> eulaWindow;
+
+    std::unique_ptr<juce::MenuBarComponent> menuBar;
+    std::unique_ptr<CreationDock::DockManager> dockManager;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };
