@@ -158,7 +158,7 @@ Key requirements:
 Important note:
 Movie should not pretend to be a DAW, but it should absolutely support professional audio handling inside the edit.
 
-## Epic 8: Internal Video Effects And CEL Plugin System
+## Epic 8: Internal Video Effects And FRust Plugin System
 
 Goal:
 Build the native effect system for picture processing.
@@ -166,7 +166,7 @@ Build the native effect system for picture processing.
 Key requirements:
 
 - internal video effect plugin model
-- CEL-driven effect logic where practical
+- FRust-driven effect logic where practical
 - parameter model suitable for automation
 - frame or clip level processing contracts
 - standard utility effects first
@@ -234,7 +234,7 @@ Recommended sequence:
 5. Shared VFS integration
 6. Control surface and MIDI mapping shared layer
 7. Audio path and VST3 audio effects
-8. Internal CEL video effects system
+8. Internal FRust video effects system
 9. Render pipeline
 10. Cross-app media workflows
 11. UX and workflow polish
@@ -258,7 +258,7 @@ Good first issue set:
 5. Define Movie asset types and metadata contract against suite VFS
 6. Generalize MIDI control router into suite shared control library
 7. Implement Movie transport mapping targets for X-Touch style devices
-8. Define internal video effect plugin interface backed by CEL-capable contracts
+8. Define internal video effect plugin interface backed by FRust-capable contracts
 9. Add VST3 audio effects support path for sequence audio
 10. Define render queue and asset publish contract
 

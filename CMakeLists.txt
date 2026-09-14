@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-set(CREATION_MOVIE_VERSION "0.0.1" CACHE STRING "Creation Movie product version")
+set(CREATION_MOVIE_VERSION "0.0.1" CACHE STRING "Djehuti Movie product version")
 project(CreationMovie VERSION ${CREATION_MOVIE_VERSION} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -19,7 +19,7 @@ if(NOT DEFINED JUCE_DIR)
 endif()
 
 include(cmake/CreationSharedLLVM.cmake)
-configure_creation_shared_llvm(CM "Creation Movie")
+configure_creation_shared_llvm(CM "Djehuti Movie")
 
 set(CREATION_SUITE_SHARED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../shared" CACHE PATH "Path to the Creation Suite shared code root")
 
@@ -62,7 +62,7 @@ if(EXISTS "${CREATION_SUITE_SHARED_DIR}/Interop/CMakeLists.txt")
 endif()
 
 juce_add_gui_app(CreationMovieApp
-    PRODUCT_NAME "Creation Movie"
+    PRODUCT_NAME "Djehuti Movie"
     COMPANY_NAME "LagDaemon Software"
     BUNDLE_ID "com.lagdaemon.creationmovie"
     ICON_BIG "${CREATION_SUITE_SHARED_DIR}/UI/assets/creation_movie.png"
@@ -119,17 +119,17 @@ install(TARGETS CreationMovieApp
 )
 install(FILES README.md LICENSE docs/EULA.txt DESTINATION .)
 
-set(CPACK_PACKAGE_NAME "Creation Movie")
+set(CPACK_PACKAGE_NAME "Djehuti Movie")
 set(CPACK_PACKAGE_VENDOR "LagDaemon Software")
 set(CPACK_PACKAGE_CONTACT "LagDaemon Software")
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Creation Movie")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Djehuti Movie")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
 set(CPACK_PACKAGE_FILE_NAME "creation-movie-${CPACK_PACKAGE_VERSION}-win64")
-set(CPACK_PACKAGE_INSTALL_DIRECTORY "Creation Movie")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "Djehuti Movie")
 set(CPACK_GENERATOR "ZIP;WIX")
-set(CPACK_WIX_PROGRAM_MENU_FOLDER "Creation Movie")
+set(CPACK_WIX_PROGRAM_MENU_FOLDER "Djehuti Movie")
 set(CPACK_WIX_LICENSE_RTF "${CMAKE_CURRENT_SOURCE_DIR}/installer/EULA.rtf")
-set(CPACK_PACKAGE_EXECUTABLES "Creation Movie" "Creation Movie")
-set(CPACK_CREATE_DESKTOP_LINKS "Creation Movie")
+set(CPACK_PACKAGE_EXECUTABLES "Djehuti Movie" "Djehuti Movie")
+set(CPACK_CREATE_DESKTOP_LINKS "Djehuti Movie")
 
 include(CPack)
