@@ -8,7 +8,7 @@ class CreationMovieApplication final : public creation::ui::SuiteJUCEApplication
 public:
     CreationMovieApplication() : SuiteJUCEApplication(creation::ui::SuiteLogoId::movie) {}
 
-    const juce::String getApplicationName() override { return "Creation Movie"; }
+    const juce::String getApplicationName() override { return "Djehuti Movie"; }
     const juce::String getApplicationVersion() override { return "0.0.1"; }
     bool moreThanOneInstanceAllowed() override { return true; }
 
