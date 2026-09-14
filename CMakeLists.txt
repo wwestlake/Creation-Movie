@@ -66,14 +66,12 @@ if(EXISTS "${CREATION_SUITE_SHARED_DIR}/JuceDocking/CMakeLists.txt")
                      "${CMAKE_CURRENT_BINARY_DIR}/CreationSuiteSharedDocking")
 endif()
 
-# Movie's CEL surface -- suite-wide language, not a bespoke per-app one.
-# ce_lang_frontend/node_system build with no LLVM dependency; only the
-# JIT half of shared/CEL needs LLVM, and Movie doesn't link that (yet).
+# Movie's node-graph surface -- suite-wide (node_system), not a bespoke
+# per-app one. No FRust language integration is wired up yet; when Movie
+# needs real scripting, wire in shared/FrustPluginRuntime the same way
+# Djehuti Station's Signal Lab does.
 if(NOT TARGET node_system)
     add_subdirectory("${CREATION_SUITE_SHARED_DIR}/NodeSystem" CreationSuiteSharedNodeSystem)
-endif()
-if(NOT TARGET ce_lang_frontend)
-    add_subdirectory("${CREATION_SUITE_SHARED_DIR}/CEL" CreationSuiteSharedCel)
 endif()
 
 juce_add_gui_app(CreationMovieApp
@@ -123,7 +121,6 @@ target_link_libraries(CreationMovieApp PRIVATE
     ${CM_UI_TARGET}
     ${CM_INTEROP_TARGET}
     creation_movie_language_host
-    ce_lang_frontend
     node_system
     CreationDock
     juce::juce_gui_extra
