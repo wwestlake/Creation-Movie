@@ -975,7 +975,7 @@ MainComponent::MainComponent()
     titleLabel.setColour(juce::Label::textColourId, juce::Colours::white);
     addAndMakeVisible(titleLabel);
 
-    subtitleLabel.setText("Suite-native editing, preview, and picture assembly with room for CEL and render workflows.",
+    subtitleLabel.setText("Suite-native editing, preview, and picture assembly with room for FRust and render workflows.",
                           juce::dontSendNotification);
     subtitleLabel.setColour(juce::Label::textColourId, juce::Colour(0xffb9c8db));
     addAndMakeVisible(subtitleLabel);
