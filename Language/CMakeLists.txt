@@ -11,3 +11,6 @@ if(CM_ENABLE_SCRIPTING)
 else()
     target_compile_definitions(creation_movie_language_host PUBLIC CM_ENABLE_SCRIPTING=0)
 endif()
+
+# Auto-generated output name overrides
+set_target_properties(creation_movie_language_host PROPERTIES OUTPUT_NAME "djehuti_movie_language_host")

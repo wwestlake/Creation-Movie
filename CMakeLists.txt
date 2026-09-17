@@ -75,7 +75,7 @@ if(NOT TARGET node_system)
 endif()
 
 juce_add_gui_app(CreationMovieApp
-    PRODUCT_NAME "Djehuti Movie"
+    PRODUCT_NAME "DjehutiMovie"
     COMPANY_NAME "LagDaemon Software"
     BUNDLE_ID "com.lagdaemon.creationmovie"
     ICON_BIG "${CREATION_SUITE_SHARED_DIR}/UI/assets/creation_movie.png"
@@ -138,18 +138,18 @@ install(TARGETS CreationMovieApp
 )
 install(FILES README.md LICENSE docs/EULA.txt DESTINATION .)
 
-set(CPACK_PACKAGE_NAME "Djehuti Movie")
+set(CPACK_PACKAGE_NAME "DjehutiMovie")
 set(CPACK_PACKAGE_VENDOR "LagDaemon Software")
 set(CPACK_PACKAGE_CONTACT "LagDaemon Software")
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Djehuti Movie")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "DjehutiMovie")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
 set(CPACK_PACKAGE_FILE_NAME "djehuti-movie-${CPACK_PACKAGE_VERSION}-win64")
-set(CPACK_PACKAGE_INSTALL_DIRECTORY "Djehuti Movie")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "DjehutiMovie")
 set(CPACK_GENERATOR "ZIP;WIX")
-set(CPACK_WIX_PROGRAM_MENU_FOLDER "Djehuti Movie")
+set(CPACK_WIX_PROGRAM_MENU_FOLDER "DjehutiMovie")
 set(CPACK_WIX_LICENSE_RTF "${CMAKE_CURRENT_SOURCE_DIR}/installer/EULA.rtf")
-set(CPACK_PACKAGE_EXECUTABLES "Djehuti Movie" "Djehuti Movie")
-set(CPACK_CREATE_DESKTOP_LINKS "Djehuti Movie")
+set(CPACK_PACKAGE_EXECUTABLES "DjehutiMovie" "Djehuti Movie")
+set(CPACK_CREATE_DESKTOP_LINKS "DjehutiMovie")
 
 include(CPack)
 
@@ -158,3 +158,6 @@ add_custom_command(TARGET CreationMovieApp POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:CreationMovieApp>" "D:/CreationSuite-Workspaces/gemini-$<LOWER_CASE:$<CONFIG>>-bin/"
     COMMENT "Copying CreationMovieApp to the shared gemini bin directory"
 )
+
+# Auto-generated output name overrides
+set_target_properties(CreationMovieApp PROPERTIES OUTPUT_NAME "DjehutiMovieApp")
