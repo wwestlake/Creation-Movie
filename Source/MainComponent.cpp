@@ -970,7 +970,7 @@ MainComponent::MainComponent()
 
     audioFormatManager.registerBasicFormats();
 
-    titleLabel.setText("Creation Movie", juce::dontSendNotification);
+    titleLabel.setText("Djehuti Movie", juce::dontSendNotification);
     titleLabel.setFont(juce::Font(33.0f, juce::Font::bold));
     titleLabel.setColour(juce::Label::textColourId, juce::Colours::white);
     addAndMakeVisible(titleLabel);
@@ -1895,7 +1895,7 @@ void MainComponent::showEulaWindow()
         return;
     }
 
-    auto window = std::make_unique<ManagedDocumentWindow>("Creation Movie EULA",
+    auto window = std::make_unique<ManagedDocumentWindow>("Djehuti Movie EULA",
                                                           creation_movie::branding::backgroundColour(),
                                                           juce::DocumentWindow::allButtons,
                                                           [this] { closeEulaWindow(); });
@@ -1920,7 +1920,7 @@ void MainComponent::showPreviewWindow()
         return;
     }
 
-    auto window = std::make_unique<ManagedDocumentWindow>("Creation Movie Preview",
+    auto window = std::make_unique<ManagedDocumentWindow>("Djehuti Movie Preview",
                                                           creation_movie::branding::backgroundColour(),
                                                           juce::DocumentWindow::allButtons,
                                                           [this] { closePreviewWindow(); });
