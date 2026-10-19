@@ -20,6 +20,7 @@ endif()
 
 include(cmake/CreationSharedLLVM.cmake)
 configure_creation_shared_llvm(CM "Djehuti Movie")
+include(cmake/MovieFFmpeg.cmake)
 
 set(CREATION_SUITE_SHARED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../shared" CACHE PATH "Path to the Creation Suite shared code root")
 
@@ -47,11 +48,32 @@ if(EXISTS "${CREATION_SUITE_SHARED_DIR}/Services/CMakeLists.txt")
     set(CM_SERVICES_TARGET creation_suite_services)
 endif()
 
+set(CM_LITESEMRAG_TARGET "")
+if(EXISTS "${CREATION_SUITE_SHARED_DIR}/LiteSemRag/CMakeLists.txt")
+    add_subdirectory("${CREATION_SUITE_SHARED_DIR}/LiteSemRag"
+                     "${CMAKE_CURRENT_BINARY_DIR}/CreationSuiteSharedLiteSemRag")
+    set(CM_LITESEMRAG_TARGET creation_suite_litesemrag)
+endif()
+
 set(CM_UI_TARGET "")
 if(EXISTS "${CREATION_SUITE_SHARED_DIR}/UI/CMakeLists.txt")
     add_subdirectory("${CREATION_SUITE_SHARED_DIR}/UI"
                      "${CMAKE_CURRENT_BINARY_DIR}/CreationSuiteSharedUI")
     set(CM_UI_TARGET creation_suite_ui)
+endif()
+
+set(CM_VIRTUAL_ENGINEER_TARGET "")
+if(EXISTS "${CREATION_SUITE_SHARED_DIR}/VirtualEngineer/CMakeLists.txt")
+    add_subdirectory("${CREATION_SUITE_SHARED_DIR}/VirtualEngineer"
+                     "${CMAKE_CURRENT_BINARY_DIR}/CreationSuiteSharedVirtualEngineer")
+    set(CM_VIRTUAL_ENGINEER_TARGET creation_suite_virtual_engineer creation_suite_virtual_engineer_ui)
+endif()
+
+set(CM_TIMELINE_TARGET "")
+if(EXISTS "${CREATION_SUITE_SHARED_DIR}/Timeline/CMakeLists.txt")
+    add_subdirectory("${CREATION_SUITE_SHARED_DIR}/Timeline"
+                     "${CMAKE_CURRENT_BINARY_DIR}/CreationSuiteSharedTimeline")
+    set(CM_TIMELINE_TARGET creation_suite_timeline)
 endif()
 
 set(CM_INTEROP_TARGET "")
@@ -66,10 +88,6 @@ if(EXISTS "${CREATION_SUITE_SHARED_DIR}/JuceDocking/CMakeLists.txt")
                      "${CMAKE_CURRENT_BINARY_DIR}/CreationSuiteSharedDocking")
 endif()
 
-# Movie's node-graph surface -- suite-wide (node_system), not a bespoke
-# per-app one. No FRust language integration is wired up yet; when Movie
-# needs real scripting, wire in shared/FrustPluginRuntime the same way
-# Djehuti Station's Signal Lab does.
 if(NOT TARGET node_system)
     add_subdirectory("${CREATION_SUITE_SHARED_DIR}/NodeSystem" CreationSuiteSharedNodeSystem)
 endif()
@@ -82,19 +100,12 @@ juce_add_gui_app(CreationMovieApp
     ICON_SMALL "${CREATION_SUITE_SHARED_DIR}/UI/assets/creation_movie.png"
 )
 
-# Mirrors the built executable into the workspace-level shared bin
-# directory (D:\CreationSuite-Workspaces\claude-<config>-bin) so it's
-# reachable at a stable path without needing OS symlink privileges.
-# Every suite agent does this for its own repo -- see AGENTS.md.
-add_custom_command(TARGET CreationMovieApp POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "D:/CreationSuite-Workspaces/claude-$<LOWER_CASE:$<CONFIG>>-bin"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:CreationMovieApp>" "D:/CreationSuite-Workspaces/claude-$<LOWER_CASE:$<CONFIG>>-bin/"
-    COMMENT "Copying CreationMovieApp to the shared claude bin directory"
-)
+movie_copy_ffmpeg(CreationMovieApp)
 
 juce_generate_juce_header(CreationMovieApp)
 
 target_include_directories(CreationMovieApp PRIVATE
+    "${CREATION_SUITE_SHARED_DIR}/JuceDocking"
     "${CREATION_SUITE_SHARED_DIR}/JuceDocking/include"
 )
 
@@ -102,6 +113,13 @@ target_sources(CreationMovieApp PRIVATE
     Source/Main.cpp
     Source/MainComponent.cpp
     Source/MainComponent.h
+    Source/MovieDocument.cpp
+    Source/MovieDocument.h
+    Source/MovieMedia.cpp
+    Source/MovieMedia.h
+    Source/MoviePlayback.cpp
+    Source/MoviePlayback.h
+    Source/MovieExport.cpp
     Source/Legal/EulaText.cpp
     Source/Legal/EulaText.h
     Source/Branding.cpp
@@ -117,9 +135,14 @@ target_compile_definitions(CreationMovieApp PRIVATE
 
 target_link_libraries(CreationMovieApp PRIVATE
     ${CM_ASSET_SYSTEM_TARGET}
+    ${CM_VFS_TARGET}
     ${CM_SERVICES_TARGET}
+    ${CM_LITESEMRAG_TARGET}
+    ${CM_VIRTUAL_ENGINEER_TARGET}
+    ${CM_TIMELINE_TARGET}
     ${CM_UI_TARGET}
     ${CM_INTEROP_TARGET}
+    movie_ffmpeg
     creation_movie_language_host
     node_system
     CreationDock

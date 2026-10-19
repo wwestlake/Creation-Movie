@@ -2,7 +2,7 @@
 
 ## Build Output
 
-- Always build Creation Movie in the existing `D:\000 Creation Movie\build` directory.
+- Build in `build/` inside this shared CreationMovie checkout. The old `D:\000 Creation Movie` checkout was retired in the October 17 workspace consolidation.
 - Do not create alternate or scratch build folders (`build-test`, `build-clean`, or similar).
 - If a different build directory ever seems necessary, stop and discuss it with the user before doing anything.
 - Configure with `-DJUCE_DIR=D:\JUCE2\JUCE` so Creation Movie stays on the same JUCE checkout as Creation Station and Creation Engine.

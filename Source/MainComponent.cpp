@@ -1,2001 +1,1847 @@
 #include "MainComponent.h"
-
 #include "Branding.h"
-#include "../Language/AppLanguagePolicy.h"
+#include "Legal/EulaText.h"
+#include <creation/assets/ProjectAssetService.h>
+#include <creation/assets/ProjectContainerService.h>
+#include <creation/assets/ProjectWorkspaceService.h>
+#include <creation/assets/VfsEntryInputStream.h>
+#include <creation/suite/SuiteSettings.h>
+#include <creation/services/SuiteVfsJsonStore.h>
+#include <creation/ui/SuiteEulaPanel.h>
+#include <creation/ui/SuiteJUCEApplication.h>
+#include <creation/ui/SuiteSettingsPanel.h>
 
 namespace
 {
-constexpr const char* kMovieStateEntryPath = "Project/movie-state.json";
+constexpr const char* kMovieStateEntry = "Project/movie-state.json";
+constexpr const char* kMovieLayoutEntry = "movie/layout.json";
 
-// Wraps an existing component (not owned) as a dock panel's content, filling
-// whatever bounds the dock zone/tab gives it. previewSurface/timelineCanvas/
-// assetLibraryPanel/inspectorPanel stay owned by MainComponent's own
-// unique_ptrs -- this only ever holds a reference, never takes ownership,
-// since ~25 call sites elsewhere in this file dereference those pointers directly.
-class NonOwningPanelHost final : public juce::Component
+class NonOwningHost final : public juce::Component
 {
 public:
-    explicit NonOwningPanelHost(juce::Component& contentToHost) : content(contentToHost)
-    {
-        addAndMakeVisible(content);
-    }
-
-    void resized() override
-    {
-        content.setBounds(getLocalBounds());
-    }
-
+    explicit NonOwningHost(juce::Component& c) : child(c) { addAndMakeVisible(child); }
+    void resized() override { child.setBounds(getLocalBounds()); }
 private:
-    juce::Component& content;
+    juce::Component& child;
 };
 
-const juce::String panelIdPreview = "preview";
-const juce::String panelIdTimeline = "timeline";
-const juce::String panelIdLibrary = "library";
-const juce::String panelIdInspector = "inspector";
-
-constexpr int menuIdPanelPreview = 3001;
-constexpr int menuIdPanelTimeline = 3002;
-constexpr int menuIdPanelLibrary = 3003;
-constexpr int menuIdPanelInspector = 3004;
-constexpr int menuIdResetLayout = 3005;
-
-juce::Colour panelOutlineColour()
+juce::String formatTimecode(double seconds, int fpsNum, int fpsDen)
 {
-    return creation_movie::branding::accentColour().withAlpha(0.32f);
-}
-
-juce::String formatTimecode(double seconds, double fps)
-{
-    const auto safeFps = juce::jmax(1, static_cast<int>(std::round(fps)));
-    const auto totalFrames = juce::jmax(0, static_cast<int>(std::round(seconds * safeFps)));
-    const auto frames = totalFrames % safeFps;
-    const auto totalSeconds = totalFrames / safeFps;
-    const auto secs = totalSeconds % 60;
-    const auto mins = (totalSeconds / 60) % 60;
-    const auto hours = totalSeconds / 3600;
-
+    const double fps = fpsDen > 0 && fpsNum > 0 ? (double) fpsNum / fpsDen : 30.0;
+    const int safeFps = std::max(1, (int) std::lround(fps));
+    const int64_t totalFrames = std::max<int64_t>(0, std::llround(std::max(0.0, seconds) * fps));
+    const int frames = (int) (totalFrames % safeFps);
+    const int64_t totalSecs = totalFrames / safeFps;
+    const int secs = (int) (totalSecs % 60);
+    const int mins = (int) ((totalSecs / 60) % 60);
+    const int hours = (int) (totalSecs / 3600);
     return juce::String::formatted("%02d:%02d:%02d:%02d", hours, mins, secs, frames);
 }
 
-juce::String formatShortDuration(double seconds)
+juce::var schemaObj(std::initializer_list<std::pair<juce::Identifier, juce::var>> props,
+                    juce::StringArray required = {})
 {
-    if (seconds <= 0.0)
-        return "clip metadata pending";
-
-    const auto totalSeconds = juce::jmax(0, static_cast<int>(std::round(seconds)));
-    const auto secs = totalSeconds % 60;
-    const auto mins = (totalSeconds / 60) % 60;
-    const auto hours = totalSeconds / 3600;
-
-    if (hours > 0)
-        return juce::String::formatted("%d:%02d:%02d", hours, mins, secs);
-
-    return juce::String::formatted("%02d:%02d", mins, secs);
+    juce::Array<juce::var> req;
+    for (const auto& r : required) req.add(r);
+    return movie::object({
+        { "type", "object" },
+        { "properties", movie::object(props) },
+        { "required", req },
+        { "additionalProperties", false }
+    });
 }
+} // namespace
 
-juce::String assetKindLabel(MainComponent::AssetKind kind)
-{
-    switch (kind)
-    {
-        case MainComponent::AssetKind::video: return "Video";
-        case MainComponent::AssetKind::audio: return "Audio";
-        case MainComponent::AssetKind::image: return "Still";
-    }
-
-    return "Asset";
-}
-
-juce::String assetKindToken(MainComponent::AssetKind kind)
-{
-    switch (kind)
-    {
-        case MainComponent::AssetKind::video: return "video";
-        case MainComponent::AssetKind::audio: return "audio";
-        case MainComponent::AssetKind::image: return "image";
-    }
-
-    return "video";
-}
-
-MainComponent::AssetKind assetKindFromToken(const juce::String& token)
-{
-    if (token == "audio")
-        return MainComponent::AssetKind::audio;
-    if (token == "image")
-        return MainComponent::AssetKind::image;
-    return MainComponent::AssetKind::video;
-}
-
-juce::Colour colourForAssetKind(MainComponent::AssetKind kind)
-{
-    switch (kind)
-    {
-        case MainComponent::AssetKind::video: return juce::Colour(0xff4a95cf);
-        case MainComponent::AssetKind::audio: return juce::Colour(0xffe28d57);
-        case MainComponent::AssetKind::image: return juce::Colour(0xff8f63d6);
-    }
-
-    return juce::Colours::grey;
-}
-
-bool isVideoExtension(const juce::String& extension)
-{
-    static const juce::StringArray extensions { ".mov", ".mp4", ".m4v", ".avi", ".mkv", ".wmv", ".webm", ".mpeg", ".mpg" };
-    return extensions.contains(extension.toLowerCase());
-}
-
-bool isImageExtension(const juce::String& extension)
-{
-    static const juce::StringArray extensions { ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff", ".webp" };
-    return extensions.contains(extension.toLowerCase());
-}
-
-int laneForAssetKind(MainComponent::AssetKind kind)
-{
-    switch (kind)
-    {
-        case MainComponent::AssetKind::video: return 0;
-        case MainComponent::AssetKind::image: return 1;
-        case MainComponent::AssetKind::audio: return 2;
-    }
-
-    return 0;
-}
-
-double defaultClipDurationForAsset(const MainComponent::AssetRecord& asset)
-{
-    if (asset.durationSeconds > 0.0)
-        return asset.durationSeconds;
-
-    switch (asset.kind)
-    {
-        case MainComponent::AssetKind::video: return 6.0;
-        case MainComponent::AssetKind::image: return 4.0;
-        case MainComponent::AssetKind::audio: return 3.0;
-    }
-
-    return 4.0;
-}
-
-const MainComponent::AssetRecord* findAssetById(const std::vector<MainComponent::AssetRecord>& assets, const juce::String& assetId)
-{
-    for (const auto& asset : assets)
-        if (asset.id == assetId)
-            return &asset;
-
-    return nullptr;
-}
-
-void tryReloadImagePreview(MainComponent::AssetRecord& asset)
-{
-    if (asset.kind != MainComponent::AssetKind::image)
-        return;
-
-    const juce::File file(asset.sourcePath);
-    if (! file.existsAsFile())
-        return;
-
-    asset.previewImage = juce::ImageFileFormat::loadFrom(file);
-    if (asset.previewImage.isValid())
-    {
-        asset.width = asset.previewImage.getWidth();
-        asset.height = asset.previewImage.getHeight();
-    }
-}
-
-class ManagedDocumentWindow final : public juce::DocumentWindow
+// =============================================================================
+// Library Panel
+// =============================================================================
+class MainComponent::Library final : public juce::Component
 {
 public:
-    ManagedDocumentWindow(const juce::String& title,
-                          juce::Colour backgroundColour,
-                          int buttons,
-                          std::function<void()> onCloseCallback)
-        : juce::DocumentWindow(title, backgroundColour, buttons),
-          onClose(std::move(onCloseCallback))
+    explicit Library(MainComponent& o) : owner(o)
     {
-    }
-
-    void closeButtonPressed() override
-    {
-        setVisible(false);
-        if (onClose)
-            onClose();
-    }
-
-private:
-    std::function<void()> onClose;
-};
-
-class StationStyleTransportLookAndFeel final : public juce::LookAndFeel_V4
-{
-public:
-    void drawButtonBackground(juce::Graphics& g,
-                              juce::Button& button,
-                              const juce::Colour& backgroundColour,
-                              bool isMouseOverButton,
-                              bool isButtonDown) override
-    {
-        juce::ignoreUnused(backgroundColour);
-
-        auto bounds = button.getLocalBounds().toFloat().reduced(1.5f);
-        auto isToggle = button.getToggleState();
-        auto accent = juce::Colour(0xff59dfff);
-        auto fill = juce::Colour(0xff17222c);
-
-        if (button.getName() == "recordButton")
-            accent = juce::Colour(0xffff5f73);
-        else if (button.getName() == "scrubButton")
-            accent = juce::Colour(0xff56f4ff);
-
-        if (isToggle)
-            fill = accent.withAlpha(0.25f).overlaidWith(juce::Colour(0xff13202b));
-        else if (isButtonDown)
-            fill = accent.withAlpha(0.20f).overlaidWith(fill);
-        else if (isMouseOverButton)
-            fill = accent.withAlpha(0.12f).overlaidWith(fill);
-
-        g.setColour(accent.withAlpha(isToggle ? 0.35f : isMouseOverButton ? 0.35f : 0.14f));
-        g.fillRoundedRectangle(bounds.expanded(2.0f), 13.0f);
-        g.setColour(fill);
-        g.fillRoundedRectangle(bounds, 11.0f);
-
-        g.setColour(accent.withAlpha(isToggle ? 1.0f : 0.62f));
-        g.drawRoundedRectangle(bounds, 11.0f, isToggle ? 2.0f : 1.3f);
-
-        auto ring = bounds.reduced(7.0f, 5.0f);
-        if (ring.getWidth() > 18.0f && ring.getHeight() > 18.0f && button.getButtonText() != "record")
+        importBtn.onClick = [this] { owner.chooseImport(); };
+        placeBtn.onClick = [this]
         {
-            auto diameter = juce::jmin(ring.getWidth(), ring.getHeight());
-            auto circle = juce::Rectangle<float>(diameter, diameter).withCentre(ring.getCentre());
-            g.setColour(accent.withAlpha(isToggle ? 0.96f : 0.36f));
-            g.drawEllipse(circle, isToggle ? 2.4f : 2.0f);
-        }
-    }
-
-    void drawButtonText(juce::Graphics& g,
-                        juce::TextButton& button,
-                        bool isMouseOverButton,
-                        bool isButtonDown) override
-    {
-        auto bounds = button.getLocalBounds().toFloat().reduced(8.0f, 7.0f);
-        auto accent = button.getName() == "recordButton" ? juce::Colour(0xffff6b7c)
-                                                         : juce::Colour(0xffdcecff);
-
-        g.setColour(button.getToggleState() ? juce::Colours::white
-                                            : (isButtonDown ? accent
-                                                            : isMouseOverButton ? juce::Colour(0xffdcecff)
-                                                                                : juce::Colour(0xffb8c4d5)));
-        drawTransportIcon(g, bounds, button.getButtonText());
-    }
-
-private:
-    static void drawTransportIcon(juce::Graphics& g, juce::Rectangle<float> bounds, const juce::String& iconName)
-    {
-        auto centre = bounds.getCentre();
-        auto size = juce::jmin(bounds.getWidth(), bounds.getHeight());
-
-        if (iconName == "play")
-        {
-            juce::Path path;
-            path.addTriangle(centre.x - size * 0.22f, centre.y - size * 0.32f,
-                             centre.x - size * 0.22f, centre.y + size * 0.32f,
-                             centre.x + size * 0.32f, centre.y);
-            g.fillPath(path);
-            return;
-        }
-
-        if (iconName == "stop")
-        {
-            auto square = juce::Rectangle<float>(size * 0.55f, size * 0.55f).withCentre(centre);
-            g.fillRoundedRectangle(square, 2.0f);
-            return;
-        }
-
-        if (iconName == "record")
-        {
-            auto circle = juce::Rectangle<float>(size * 0.48f, size * 0.48f).withCentre(centre);
-            g.fillEllipse(circle);
-            return;
-        }
-
-        if (iconName == "rewind" || iconName == "forward")
-        {
-            const auto direction = iconName == "rewind" ? -1.0f : 1.0f;
-            juce::Path path;
-            path.addTriangle(centre.x - direction * size * 0.02f, centre.y,
-                             centre.x + direction * size * 0.22f, centre.y - size * 0.28f,
-                             centre.x + direction * size * 0.22f, centre.y + size * 0.28f);
-            path.addTriangle(centre.x - direction * size * 0.30f, centre.y,
-                             centre.x - direction * size * 0.06f, centre.y - size * 0.28f,
-                             centre.x - direction * size * 0.06f, centre.y + size * 0.28f);
-            g.fillPath(path);
-            return;
-        }
-
-        if (iconName == "scrub")
-        {
-            auto arc = bounds.reduced(size * 0.18f);
-            g.drawEllipse(arc, 2.0f);
-            g.drawLine(arc.getCentreX(), arc.getY(), arc.getCentreX(), arc.getBottom(), 2.0f);
-            return;
-        }
-    }
-};
-
-StationStyleTransportLookAndFeel& getStationStyleTransportLookAndFeel()
-{
-    static StationStyleTransportLookAndFeel lookAndFeel;
-    return lookAndFeel;
-}
-
-class WorkspacePanelBase : public juce::Component
-{
-public:
-    explicit WorkspacePanelBase(juce::String panelTitleToUse) : panelTitle(std::move(panelTitleToUse)) {}
-
-protected:
-    void paintPanelFrame(juce::Graphics& g, juce::Rectangle<int> bounds) const
-    {
-        auto area = bounds.toFloat();
-        g.setColour(juce::Colour(0xff131c2a));
-        g.fillRoundedRectangle(area, 18.0f);
-        g.setColour(panelOutlineColour());
-        g.drawRoundedRectangle(area, 18.0f, 1.0f);
-
-        auto header = bounds.removeFromTop(32).toFloat();
-        g.setColour(juce::Colour(0xff1d2940));
-        g.fillRoundedRectangle(header, 16.0f);
-
-        g.setColour(juce::Colours::white);
-        g.setFont(juce::Font(16.0f, juce::Font::bold));
-        g.drawText(panelTitle, header.reduced(14.0f, 0.0f), juce::Justification::centredLeft, false);
-    }
-
-    juce::Rectangle<int> getPanelContentBounds() const
-    {
-        auto area = getLocalBounds().reduced(12);
-        area.removeFromTop(42);
-        return area;
-    }
-
-private:
-    juce::String panelTitle;
-};
-
-class PreviewSurface final : public WorkspacePanelBase
-{
-public:
-    PreviewSurface(const MainComponent::TransportState& stateToUse,
-                   const std::vector<MainComponent::AssetRecord>& assetsToUse,
-                   const std::vector<MainComponent::TimelineClip>& clipsToUse,
-                   const int& selectedAssetIndexToUse,
-                   const int& selectedClipIndexToUse)
-        : WorkspacePanelBase("Program Monitor"),
-          state(stateToUse),
-          assets(assetsToUse),
-          clips(clipsToUse),
-          selectedAssetIndex(selectedAssetIndexToUse),
-          selectedClipIndex(selectedClipIndexToUse)
-    {
+            if (owner.selectedMedia.isNotEmpty())
+                owner.runUi("movie.timeline.place", movie::object({
+                    { "assetId", owner.selectedMedia },
+                    { "start", owner.playback.position() }
+                }));
+        };
+        titleBtn.onClick = [this] { owner.titleDialog(); };
+        addAndMakeVisible(importBtn);
+        addAndMakeVisible(placeBtn);
+        addAndMakeVisible(titleBtn);
     }
 
     void paint(juce::Graphics& g) override
     {
-        paintPanelFrame(g, getLocalBounds().reduced(2));
+        g.fillAll(creation_movie::branding::panelColour());
+        auto area = getLocalBounds().reduced(10);
+        area.removeFromTop(38);
 
-        auto area = getPanelContentBounds();
-        g.setColour(juce::Colour(0xff0a0f18));
-        g.fillRoundedRectangle(area.toFloat(), 14.0f);
+        g.setColour(juce::Colours::white.withAlpha(0.75f));
+        g.setFont(juce::FontOptions(13.0f, juce::Font::bold));
+        g.drawText("Project Media (" + juce::String(owner.document.sequence.media.size()) + ")",
+                   area.removeFromTop(22), juce::Justification::centredLeft);
 
-        auto monitor = area.reduced(18);
-        const auto frameHeight = static_cast<int>(monitor.getWidth() / 1.7777f);
-        auto frame = juce::Rectangle<int>(monitor.getX(),
-                                          monitor.getCentreY() - (frameHeight / 2),
-                                          monitor.getWidth(),
-                                          juce::jmin(frameHeight, monitor.getHeight()));
-
-        g.setColour(juce::Colour(0xff05080e));
-        g.fillRoundedRectangle(frame.toFloat(), 12.0f);
-
-        const auto* focusedClip = (selectedClipIndex >= 0 && selectedClipIndex < static_cast<int>(clips.size())) ? &clips[static_cast<size_t>(selectedClipIndex)] : nullptr;
-        const auto* focusedAsset = getFocusedAsset();
-
-        if (focusedAsset != nullptr && focusedAsset->kind == MainComponent::AssetKind::image && focusedAsset->previewImage.isValid())
+        if (owner.document.sequence.media.empty())
         {
-            const auto imageArea = frame.reduced(8);
-            g.drawImageWithin(focusedAsset->previewImage,
-                              imageArea.getX(),
-                              imageArea.getY(),
-                              imageArea.getWidth(),
-                              imageArea.getHeight(),
-                              juce::RectanglePlacement::centred);
-        }
-        else
-        {
-            juce::ColourGradient gradient(juce::Colour(0xff113356),
-                                          frame.getTopLeft().toFloat(),
-                                          juce::Colour(0xff2f6777),
-                                          frame.getBottomRight().toFloat(),
-                                          false);
-            gradient.addColour(0.55, juce::Colour(0xffd97c4c));
-            g.setGradientFill(gradient);
-            g.fillRoundedRectangle(frame.toFloat().reduced(8.0f), 8.0f);
-
-            g.setColour(juce::Colours::white.withAlpha(0.08f));
-            for (int i = 1; i < 3; ++i)
-                g.drawLine(static_cast<float>(frame.getX() + (frame.getWidth() * i / 3)),
-                           static_cast<float>(frame.getY()),
-                           static_cast<float>(frame.getX() + (frame.getWidth() * i / 3)),
-                           static_cast<float>(frame.getBottom()),
-                           1.0f);
-
-            for (int i = 1; i < 3; ++i)
-                g.drawLine(static_cast<float>(frame.getX()),
-                           static_cast<float>(frame.getY() + (frame.getHeight() * i / 3)),
-                           static_cast<float>(frame.getRight()),
-                           static_cast<float>(frame.getY() + (frame.getHeight() * i / 3)),
-                           1.0f);
-        }
-
-        const auto title = focusedClip != nullptr ? focusedClip->title
-                                                  : (focusedAsset != nullptr ? focusedAsset->name
-                                                                             : "No media selected");
-        const auto subtitle = focusedAsset != nullptr ? focusedAsset->metadataLine
-                                                      : "Import media and place clips on the timeline to begin editing.";
-
-        g.setColour(juce::Colours::white.withAlpha(0.90f));
-        g.setFont(juce::Font(18.0f, juce::Font::bold));
-        g.drawText(title, frame.reduced(18).removeFromTop(28), juce::Justification::topLeft, false);
-
-        g.setFont(juce::Font(13.5f));
-        g.drawText(subtitle,
-                   frame.reduced(18).withTrimmedTop(34).removeFromTop(24),
-                   juce::Justification::topLeft,
-                   false);
-
-        auto lower = frame.reduced(18);
-        lower.removeFromTop(lower.getHeight() - 56);
-
-        g.setColour(juce::Colour(0xaa000000));
-        g.fillRoundedRectangle(lower.toFloat(), 10.0f);
-
-        g.setColour(creation_movie::branding::accentColour());
-        g.setFont(juce::Font(20.0f, juce::Font::bold));
-        g.drawText(formatTimecode(state.playheadSeconds, state.framesPerSecond),
-                   lower.removeFromLeft(220),
-                   juce::Justification::centred,
-                   false);
-
-        g.setColour(juce::Colours::white.withAlpha(0.92f));
-        g.setFont(juce::Font(14.0f, juce::Font::plain));
-        g.drawText(state.scrubMode ? "Scrub armed" : (state.isPlaying ? "Rolling" : "Standing by"),
-                   lower.removeFromLeft(140),
-                   juce::Justification::centred,
-                   false);
-
-        const auto details = focusedAsset != nullptr
-                                 ? assetKindLabel(focusedAsset->kind) + "  |  " + focusedAsset->metadataLine
-                                 : "24 fps  |  preview shell ready";
-        g.drawText(details, lower, juce::Justification::centredRight, false);
-    }
-
-private:
-    const MainComponent::AssetRecord* getFocusedAsset() const
-    {
-        if (selectedAssetIndex >= 0 && selectedAssetIndex < static_cast<int>(assets.size()))
-            return &assets[static_cast<size_t>(selectedAssetIndex)];
-
-        if (selectedClipIndex >= 0 && selectedClipIndex < static_cast<int>(clips.size()))
-            return findAssetById(assets, clips[static_cast<size_t>(selectedClipIndex)].assetId);
-
-        return nullptr;
-    }
-
-    const MainComponent::TransportState& state;
-    const std::vector<MainComponent::AssetRecord>& assets;
-    const std::vector<MainComponent::TimelineClip>& clips;
-    const int& selectedAssetIndex;
-    const int& selectedClipIndex;
-};
-
-class TimelineCanvas final : public WorkspacePanelBase
-{
-public:
-    TimelineCanvas(const MainComponent::TransportState& stateToUse,
-                   const std::vector<MainComponent::TimelineClip>& clipsToUse,
-                   const std::vector<MainComponent::TimelineMarker>& markersToUse,
-                   const std::vector<MainComponent::TimelineRegion>& regionsToUse,
-                   const int& selectedClipIndexToUse,
-                   std::function<void(int)> onClipSelectedToUse,
-                   std::function<void(int, double, int)> onClipMovedToUse,
-                   std::function<void(double)> onPlayheadMovedToUse)
-        : WorkspacePanelBase("Video Tracker"),
-          state(stateToUse),
-          clips(clipsToUse),
-          markers(markersToUse),
-          regions(regionsToUse),
-          selectedClipIndex(selectedClipIndexToUse),
-          onClipSelected(std::move(onClipSelectedToUse)),
-          onClipMoved(std::move(onClipMovedToUse)),
-          onPlayheadMoved(std::move(onPlayheadMovedToUse))
-    {
-    }
-
-    void paint(juce::Graphics& g) override
-    {
-        paintPanelFrame(g, getLocalBounds().reduced(2));
-
-        auto area = getPanelContentBounds();
-        auto ruler = area.removeFromTop(42);
-        auto labels = area.removeFromLeft(148);
-
-        g.setColour(juce::Colour(0xff0e1521));
-        g.fillRoundedRectangle(ruler.toFloat(), 10.0f);
-        g.setColour(juce::Colour(0xff0f1824));
-        g.fillRoundedRectangle(labels.toFloat(), 10.0f);
-        g.setColour(juce::Colour(0xff0b111b));
-        g.fillRoundedRectangle(area.toFloat(), 10.0f);
-
-        for (const auto& region : regions)
-            drawRegion(g, area, region);
-
-        const auto end = state.visibleStartSeconds + state.visibleLengthSeconds;
-        for (int second = static_cast<int>(std::floor(state.visibleStartSeconds)); second <= static_cast<int>(std::ceil(end)); ++second)
-        {
-            const auto ratio = (second - state.visibleStartSeconds) / state.visibleLengthSeconds;
-            const auto x = area.getX() + static_cast<int>(ratio * area.getWidth());
-            g.setColour(juce::Colours::white.withAlpha(0.12f));
-            g.drawVerticalLine(x, static_cast<float>(area.getY()), static_cast<float>(area.getBottom()));
-
-            g.setColour(juce::Colours::white.withAlpha(0.7f));
-            g.setFont(juce::Font(13.0f, juce::Font::bold));
-            g.drawText(formatTimecode(static_cast<double>(second), state.framesPerSecond),
-                       x + 6,
-                       ruler.getY() + 3,
-                       112,
-                       18,
-                       juce::Justification::left,
-                       false);
-
-            g.setColour(juce::Colours::white.withAlpha(0.55f));
-            g.setFont(juce::Font(11.0f));
-            g.drawText(juce::String(second) + " s",
-                       x + 6,
-                       ruler.getY() + 20,
-                       56,
-                       16,
-                       juce::Justification::left,
-                       false);
-        }
-
-        const auto laneHeight = 68;
-        const juce::StringArray laneNames { "V1 Picture", "V2 Graphics", "A1 Dialogue", "A2 Music", "A3 FX" };
-        for (int laneIndex = 0; laneIndex < laneNames.size(); ++laneIndex)
-        {
-            const auto y = area.getY() + laneIndex * laneHeight;
-            auto laneBounds = juce::Rectangle<int>(area.getX(), y, area.getWidth(), laneHeight - 6);
-            auto labelBounds = juce::Rectangle<int>(labels.getX(), y, labels.getWidth(), laneHeight - 6);
-
-            g.setColour(juce::Colour(0xff162235));
-            g.fillRoundedRectangle(labelBounds.toFloat(), 10.0f);
-            g.setColour(juce::Colours::white.withAlpha(0.88f));
-            g.setFont(juce::Font(14.0f, juce::Font::bold));
-            g.drawText(laneNames[laneIndex], labelBounds.reduced(12, 8), juce::Justification::topLeft, false);
-            g.setFont(juce::Font(11.0f));
-            g.setColour(juce::Colours::white.withAlpha(0.56f));
-            g.drawText(laneIndex < 2 ? "picture lane" : "audio lane",
-                       labelBounds.reduced(12, 8).withTrimmedTop(22),
-                       juce::Justification::topLeft,
-                       false);
-
-            g.setColour(juce::Colours::white.withAlpha(0.05f));
-            g.fillRoundedRectangle(laneBounds.toFloat(), 10.0f);
-        }
-
-        for (size_t i = 0; i < clips.size(); ++i)
-            drawClip(g, area, static_cast<int>(i), clips[i], static_cast<int>(i) == selectedClipIndex);
-
-        for (const auto& marker : markers)
-            drawMarker(g, ruler, area, marker);
-
-        const auto playheadRatio = (state.playheadSeconds - state.visibleStartSeconds) / state.visibleLengthSeconds;
-        const auto playheadX = area.getX() + static_cast<int>(playheadRatio * area.getWidth());
-        g.setColour(creation_movie::branding::accentColour());
-        g.drawVerticalLine(playheadX, static_cast<float>(ruler.getY()), static_cast<float>(area.getBottom()));
-        g.fillEllipse(static_cast<float>(playheadX - 5), static_cast<float>(ruler.getY() + 12), 10.0f, 10.0f);
-    }
-
-    void mouseUp(const juce::MouseEvent& event) override
-    {
-        dragClipIndex = -1;
-        auto area = getTimelineArea();
-
-        for (size_t i = 0; i < clips.size(); ++i)
-        {
-            if (getClipBounds(area, clips[i]).contains(event.getPosition()))
-            {
-                if (onClipSelected)
-                    onClipSelected(static_cast<int>(i));
-                return;
-            }
-        }
-
-        if (area.contains(event.getPosition()) && onPlayheadMoved)
-            onPlayheadMoved(xToTime(area, event.x));
-    }
-
-    void mouseDown(const juce::MouseEvent& event) override
-    {
-        auto area = getTimelineArea();
-        for (size_t i = 0; i < clips.size(); ++i)
-        {
-            auto clipBounds = getClipBounds(area, clips[i]);
-            if (clipBounds.contains(event.getPosition()))
-            {
-                dragClipIndex = static_cast<int>(i);
-                dragOffsetSeconds = xToTime(area, event.x) - clips[i].startSeconds;
-                return;
-            }
-        }
-    }
-
-    void mouseDrag(const juce::MouseEvent& event) override
-    {
-        if (dragClipIndex < 0 || dragClipIndex >= static_cast<int>(clips.size()) || ! onClipMoved)
-            return;
-
-        auto area = getTimelineArea();
-        const auto laneHeight = 68;
-        auto newLane = juce::jlimit(0, 4, (event.y - area.getY()) / laneHeight);
-        auto newStart = xToTime(area, event.x) - dragOffsetSeconds;
-        newStart = juce::jmax(0.0, newStart);
-        onClipMoved(dragClipIndex, newStart, newLane);
-    }
-
-private:
-    juce::Rectangle<int> getTimelineArea() const
-    {
-        auto area = getPanelContentBounds();
-        area.removeFromTop(42);
-        area.removeFromLeft(148);
-        return area;
-    }
-
-    double xToTime(juce::Rectangle<int> laneArea, int x) const
-    {
-        const auto ratio = juce::jlimit(0.0, 1.0, (x - laneArea.getX()) / static_cast<double>(juce::jmax(1, laneArea.getWidth())));
-        return state.visibleStartSeconds + (ratio * state.visibleLengthSeconds);
-    }
-
-    void drawMarker(juce::Graphics& g, juce::Rectangle<int> ruler, juce::Rectangle<int> laneArea, const MainComponent::TimelineMarker& marker) const
-    {
-        const auto ratio = (marker.timeSeconds - state.visibleStartSeconds) / state.visibleLengthSeconds;
-        if (ratio < 0.0 || ratio > 1.0)
-            return;
-
-        const auto x = laneArea.getX() + static_cast<int>(ratio * laneArea.getWidth());
-        g.setColour(juce::Colour(0xfff0d36a));
-        g.drawVerticalLine(x, static_cast<float>(ruler.getBottom()), static_cast<float>(laneArea.getBottom()));
-        juce::Path flag;
-        flag.startNewSubPath(static_cast<float>(x), static_cast<float>(ruler.getY() + 4));
-        flag.lineTo(static_cast<float>(x + 14), static_cast<float>(ruler.getY() + 10));
-        flag.lineTo(static_cast<float>(x), static_cast<float>(ruler.getY() + 16));
-        flag.closeSubPath();
-        g.fillPath(flag);
-        g.setColour(juce::Colours::white.withAlpha(0.92f));
-        g.setFont(juce::Font(11.0f, juce::Font::bold));
-        g.drawText(marker.title, x + 18, ruler.getY() + 2, 120, 16, juce::Justification::left, false);
-    }
-
-    void drawRegion(juce::Graphics& g, juce::Rectangle<int> laneArea, const MainComponent::TimelineRegion& region) const
-    {
-        const auto startRatio = (region.startSeconds - state.visibleStartSeconds) / state.visibleLengthSeconds;
-        const auto endRatio = (region.endSeconds - state.visibleStartSeconds) / state.visibleLengthSeconds;
-        const auto clampedStart = juce::jlimit(0.0, 1.0, startRatio);
-        const auto clampedEnd = juce::jlimit(0.0, 1.0, endRatio);
-        if (clampedEnd <= clampedStart)
-            return;
-
-        auto bounds = juce::Rectangle<int>(laneArea.getX() + static_cast<int>(clampedStart * laneArea.getWidth()),
-                                           laneArea.getY(),
-                                           static_cast<int>((clampedEnd - clampedStart) * laneArea.getWidth()),
-                                           laneArea.getHeight());
-        g.setColour(region.colour.withAlpha(0.12f));
-        g.fillRoundedRectangle(bounds.toFloat(), 8.0f);
-        g.setColour(region.colour.withAlpha(0.28f));
-        g.drawRoundedRectangle(bounds.toFloat(), 8.0f, 1.0f);
-        g.setColour(region.colour.brighter(0.3f));
-        g.setFont(juce::Font(12.0f, juce::Font::bold));
-        g.drawText(region.title, bounds.reduced(8, 4).removeFromTop(18), juce::Justification::centredLeft, false);
-    }
-
-    juce::Rectangle<int> getClipBounds(juce::Rectangle<int> laneArea, const MainComponent::TimelineClip& clip) const
-    {
-        const auto laneHeight = 68;
-        const auto y = laneArea.getY() + clip.laneIndex * laneHeight + 10;
-        const auto x = laneArea.getX() + static_cast<int>(((clip.startSeconds - state.visibleStartSeconds) / state.visibleLengthSeconds) * laneArea.getWidth());
-        const auto width = static_cast<int>((clip.durationSeconds / state.visibleLengthSeconds) * laneArea.getWidth());
-        return { x, y, juce::jmax(110, width), laneHeight - 24 };
-    }
-
-    void drawClip(juce::Graphics& g,
-                  juce::Rectangle<int> laneArea,
-                  int clipIndex,
-                  const MainComponent::TimelineClip& clip,
-                  bool isSelected) const
-    {
-        auto clipBounds = getClipBounds(laneArea, clip);
-
-        g.setColour(clip.colour);
-        g.fillRoundedRectangle(clipBounds.toFloat(), 10.0f);
-        g.setColour(juce::Colours::white.withAlpha(isSelected ? 1.0f : 0.9f));
-        g.drawRoundedRectangle(clipBounds.toFloat(), 10.0f, isSelected ? 2.0f : 1.0f);
-        g.setFont(juce::Font(14.0f, juce::Font::bold));
-        g.drawText(clip.title, clipBounds.reduced(12, 8).removeFromTop(20), juce::Justification::centredLeft, false);
-        g.setFont(juce::Font(11.0f));
-        g.drawText(formatTimecode(clip.startSeconds, state.framesPerSecond) + "  to  "
-                       + formatTimecode(clip.startSeconds + clip.durationSeconds, state.framesPerSecond),
-                   clipBounds.reduced(12, 8).withTrimmedTop(20),
-                   juce::Justification::centredLeft,
-                   false);
-
-        if (isSelected)
-        {
-            g.setColour(juce::Colours::white.withAlpha(0.12f));
-            g.drawText("selected", clipBounds.removeFromRight(68), juce::Justification::centred, false);
-        }
-    }
-
-    const MainComponent::TransportState& state;
-    const std::vector<MainComponent::TimelineClip>& clips;
-    const std::vector<MainComponent::TimelineMarker>& markers;
-    const std::vector<MainComponent::TimelineRegion>& regions;
-    const int& selectedClipIndex;
-    std::function<void(int)> onClipSelected;
-    std::function<void(int, double, int)> onClipMoved;
-    std::function<void(double)> onPlayheadMoved;
-    int dragClipIndex = -1;
-    double dragOffsetSeconds = 0.0;
-};
-
-class AssetLibraryPanel final : public WorkspacePanelBase
-{
-public:
-    AssetLibraryPanel(const std::vector<MainComponent::AssetRecord>& assetsToUse,
-                      const int& selectedAssetIndexToUse,
-                      std::function<void(int)> onAssetSelectedToUse)
-        : WorkspacePanelBase("Media Library"),
-          assets(assetsToUse),
-          selectedAssetIndex(selectedAssetIndexToUse),
-          onAssetSelected(std::move(onAssetSelectedToUse))
-    {
-    }
-
-    void paint(juce::Graphics& g) override
-    {
-        paintPanelFrame(g, getLocalBounds().reduced(2));
-        auto area = getPanelContentBounds();
-
-        if (assets.empty())
-        {
-            g.setColour(juce::Colours::white.withAlpha(0.55f));
-            g.setFont(juce::Font(14.0f));
-            g.drawFittedText("Import media to begin building the sequence library.",
-                             area.reduced(16),
-                             juce::Justification::centred,
-                             4);
+            g.setColour(juce::Colours::white.withAlpha(0.45f));
+            g.setFont(juce::FontOptions(13.0f));
+            g.drawFittedText("No media imported yet.\nUse Import Media or movie.media.import.",
+                             area.reduced(8), juce::Justification::centred, 3);
             return;
         }
 
-        for (size_t i = 0; i < assets.size(); ++i)
+        int y = area.getY();
+        for (const auto& m : owner.document.sequence.media)
         {
-            auto card = getCardBoundsForIndex(area, static_cast<int>(i));
-            const auto& asset = assets[i];
-            const auto isSelected = static_cast<int>(i) == selectedAssetIndex;
+            juce::Rectangle<int> row(area.getX(), y, area.getWidth(), 54);
+            if (row.getBottom() > getHeight() - 8)
+                break;
 
-            g.setColour(isSelected ? juce::Colour(0xff27405f) : juce::Colour(0xff18263a));
-            g.fillRoundedRectangle(card.toFloat(), 12.0f);
-            g.setColour(isSelected ? creation_movie::branding::accentColour() : juce::Colours::white.withAlpha(0.08f));
-            g.drawRoundedRectangle(card.toFloat(), 12.0f, isSelected ? 1.5f : 1.0f);
+            const bool selected = (m.id == owner.selectedMedia);
+            g.setColour(selected ? creation_movie::branding::accentColour().withAlpha(0.28f)
+                                 : juce::Colour(0xff182232));
+            g.fillRoundedRectangle(row.toFloat(), 6.0f);
+            g.setColour(selected ? creation_movie::branding::accentColour()
+                                 : juce::Colours::white.withAlpha(0.14f));
+            g.drawRoundedRectangle(row.toFloat(), 6.0f, 1.0f);
 
-            auto text = card.reduced(12, 10);
-            g.setColour(juce::Colours::white.withAlpha(0.94f));
-            g.setFont(juce::Font(14.0f, juce::Font::bold));
-            g.drawText(asset.name, text.removeFromTop(22), juce::Justification::centredLeft, false);
+            g.setColour(juce::Colours::white);
+            g.setFont(juce::FontOptions(13.5f, juce::Font::bold));
+            g.drawText(m.name, row.reduced(8, 4).removeFromTop(20), juce::Justification::centredLeft, true);
 
-            g.setColour(juce::Colours::white.withAlpha(0.62f));
-            g.setFont(juce::Font(11.5f));
-            g.drawText(asset.metadataLine, text.removeFromTop(18), juce::Justification::centredLeft, false);
-            g.drawText(asset.sourcePath, text, juce::Justification::bottomLeft, true);
+            juce::String meta;
+            if (m.info.hasVideo)
+                meta << m.info.width << "x" << m.info.height << " " << m.info.videoCodec << " ";
+            if (m.info.hasAudio)
+                meta << m.info.sampleRate << "Hz " << m.info.channels << "ch " << m.info.audioCodec << " ";
+            meta << juce::String(m.info.duration, 2) << "s";
+
+            g.setColour(juce::Colours::white.withAlpha(0.65f));
+            g.setFont(juce::FontOptions(11.5f));
+            g.drawText(meta, row.reduced(8, 4).withTrimmedTop(22), juce::Justification::centredLeft, true);
+
+            y += 60;
         }
-    }
-
-    void mouseUp(const juce::MouseEvent& event) override
-    {
-        auto area = getPanelContentBounds();
-
-        for (size_t i = 0; i < assets.size(); ++i)
-        {
-            if (getCardBoundsForIndex(area, static_cast<int>(i)).contains(event.getPosition()))
-            {
-                if (onAssetSelected)
-                    onAssetSelected(static_cast<int>(i));
-                return;
-            }
-        }
-    }
-
-private:
-    juce::Rectangle<int> getCardBoundsForIndex(juce::Rectangle<int> area, int index) const
-    {
-        const auto cardHeight = 74;
-        const auto gap = 10;
-        area.removeFromTop(index * (cardHeight + gap));
-        return area.removeFromTop(cardHeight);
-    }
-
-    const std::vector<MainComponent::AssetRecord>& assets;
-    const int& selectedAssetIndex;
-    std::function<void(int)> onAssetSelected;
-};
-
-class InspectorPanel final : public WorkspacePanelBase
-{
-public:
-    InspectorPanel(const MainComponent::TransportState& stateToUse,
-                   const std::vector<MainComponent::AssetRecord>& assetsToUse,
-                   const std::vector<MainComponent::TimelineClip>& clipsToUse,
-                   const int& selectedAssetIndexToUse,
-                   const int& selectedClipIndexToUse)
-        : WorkspacePanelBase("Inspector"),
-          state(stateToUse),
-          assets(assetsToUse),
-          clips(clipsToUse),
-          selectedAssetIndex(selectedAssetIndexToUse),
-          selectedClipIndex(selectedClipIndexToUse)
-    {
-    }
-
-    void paint(juce::Graphics& g) override
-    {
-        paintPanelFrame(g, getLocalBounds().reduced(2));
-        auto area = getPanelContentBounds();
-
-        drawSection(g, area.removeFromTop(120), "Sequence",
-                    juce::String("Project: Untitled Movie\nFrame rate: ")
-                        + juce::String(state.framesPerSecond, 0)
-                        + " fps\nVisible range: "
-                        + formatTimecode(state.visibleStartSeconds, state.framesPerSecond)
-                        + " - "
-                        + formatTimecode(state.visibleStartSeconds + state.visibleLengthSeconds, state.framesPerSecond));
-        area.removeFromTop(10);
-
-        if (selectedClipIndex >= 0 && selectedClipIndex < static_cast<int>(clips.size()))
-        {
-            const auto& clip = clips[static_cast<size_t>(selectedClipIndex)];
-            drawSection(g, area.removeFromTop(116), "Selected Clip",
-                        clip.title + "\nIn: " + formatTimecode(clip.startSeconds, state.framesPerSecond)
-                            + "\nDuration: " + formatTimecode(clip.durationSeconds, state.framesPerSecond)
-                            + "\nLane: " + juce::String(clip.laneIndex + 1));
-            area.removeFromTop(10);
-        }
-
-        const auto* asset = getFocusedAsset();
-        if (asset != nullptr)
-        {
-            drawSection(g, area.removeFromTop(132), "Focused Asset",
-                        asset->name + "\n" + asset->metadataLine + "\nSource: " + asset->sourcePath);
-            area.removeFromTop(10);
-        }
-
-        drawSection(g, area.removeFromTop(108), "Routing",
-                    "Video FX lane: pending\nAudio FX lane: VST3 ready\nSuite asset binding: planned next step");
-    }
-
-private:
-    const MainComponent::AssetRecord* getFocusedAsset() const
-    {
-        if (selectedAssetIndex >= 0 && selectedAssetIndex < static_cast<int>(assets.size()))
-            return &assets[static_cast<size_t>(selectedAssetIndex)];
-
-        if (selectedClipIndex >= 0 && selectedClipIndex < static_cast<int>(clips.size()))
-            return findAssetById(assets, clips[static_cast<size_t>(selectedClipIndex)].assetId);
-
-        return nullptr;
-    }
-
-    void drawSection(juce::Graphics& g, juce::Rectangle<int> bounds, const juce::String& title, const juce::String& body) const
-    {
-        g.setColour(juce::Colour(0xff18263a));
-        g.fillRoundedRectangle(bounds.toFloat(), 12.0f);
-
-        auto text = bounds.reduced(12, 10);
-        g.setColour(juce::Colours::white);
-        g.setFont(juce::Font(14.0f, juce::Font::bold));
-        g.drawText(title, text.removeFromTop(22), juce::Justification::centredLeft, false);
-        g.setColour(juce::Colours::white.withAlpha(0.68f));
-        g.setFont(juce::Font(12.0f));
-        g.drawFittedText(body, text, juce::Justification::topLeft, 6);
-    }
-
-    const MainComponent::TransportState& state;
-    const std::vector<MainComponent::AssetRecord>& assets;
-    const std::vector<MainComponent::TimelineClip>& clips;
-    const int& selectedAssetIndex;
-    const int& selectedClipIndex;
-};
-
-class EulaPanel final : public juce::Component
-{
-public:
-    explicit EulaPanel(const juce::String& text)
-    {
-        title.setText("End User License Agreement", juce::dontSendNotification);
-        title.setFont(juce::Font(20.0f).boldened());
-        title.setColour(juce::Label::textColourId, juce::Colours::white);
-        addAndMakeVisible(title);
-
-        body.setMultiLine(true);
-        body.setReadOnly(true);
-        body.setScrollbarsShown(true);
-        body.setCaretVisible(false);
-        body.setText(text, juce::dontSendNotification);
-        addAndMakeVisible(body);
-    }
-
-    void paint(juce::Graphics& g) override
-    {
-        g.fillAll(creation_movie::branding::backgroundColour());
     }
 
     void resized() override
     {
-        auto area = getLocalBounds().reduced(16);
-        title.setBounds(area.removeFromTop(28));
-        area.removeFromTop(8);
-        body.setBounds(area);
+        auto top = getLocalBounds().reduced(10).removeFromTop(30);
+        const int w = std::max(60, (top.getWidth() - 8) / 3);
+        importBtn.setBounds(top.removeFromLeft(w));
+        top.removeFromLeft(4);
+        placeBtn.setBounds(top.removeFromLeft(w));
+        top.removeFromLeft(4);
+        titleBtn.setBounds(top);
+    }
+
+    void mouseDown(const juce::MouseEvent& e) override
+    {
+        auto area = getLocalBounds().reduced(10);
+        area.removeFromTop(60);
+        const int idx = (e.y - area.getY()) / 60;
+        if (idx >= 0 && idx < (int) owner.document.sequence.media.size())
+        {
+            const auto& m = owner.document.sequence.media[(size_t) idx];
+            owner.selectMedia(m.id);
+            if (e.mods.isPopupMenu())
+            {
+                juce::PopupMenu mMenu;
+                mMenu.addItem(1, "Place at Playhead");
+                mMenu.addItem(2, "Append to End of Timeline");
+                mMenu.showMenuAsync(
+                    juce::PopupMenu::Options().withTargetScreenArea({ e.getScreenX(), e.getScreenY(), 1, 1 }),
+                    [this, id = m.id](int res)
+                    {
+                        if (res == 1)
+                            owner.runUi("movie.timeline.place", movie::object({ { "assetId", id }, { "start", owner.playback.position() } }));
+                        else if (res == 2)
+                            owner.runUi("movie.timeline.place", movie::object({ { "assetId", id }, { "start", owner.document.sequence.duration() } }));
+                    });
+            }
+        }
+    }
+
+    void mouseDoubleClick(const juce::MouseEvent& e) override
+    {
+        mouseDown(e);
+        if (owner.selectedMedia.isNotEmpty())
+            owner.runUi("movie.timeline.place", movie::object({
+                { "assetId", owner.selectedMedia },
+                { "start", owner.playback.position() }
+            }));
     }
 
 private:
-    juce::Label title;
-    juce::TextEditor body;
+    MainComponent& owner;
+    juce::TextButton importBtn { "Import..." }, placeBtn { "Place" }, titleBtn { "+ Title" };
 };
-}
 
+// =============================================================================
+// Monitor Panel (Source Monitor & Program Monitor)
+// =============================================================================
+class MainComponent::Monitor final : public juce::Component
+{
+public:
+    Monitor(MainComponent& o, movie::Playback& p, bool isSourceMonitor)
+        : owner(o), player(p), sourceMode(isSourceMonitor)
+    {
+        playBtn.onClick = [this]
+        {
+            if (sourceMode)
+                player.play(! player.playing());
+            else
+                owner.runUi(player.playing() ? "movie.transport.pause" : "movie.transport.play");
+        };
+        stopBtn.onClick = [this]
+        {
+            if (sourceMode)
+            {
+                player.play(false);
+                player.seek(0.0);
+            }
+            else
+            {
+                owner.runUi("movie.transport.stop");
+            }
+        };
+        stepBackBtn.onClick = [this]
+        {
+            if (sourceMode)
+            {
+                player.play(false);
+                player.seek(std::max(0.0, player.position() - owner.document.sequence.frameSeconds()));
+            }
+            else
+            {
+                owner.runUi("movie.transport.step", movie::object({ { "frames", -1 } }));
+            }
+        };
+        stepFwdBtn.onClick = [this]
+        {
+            if (sourceMode)
+            {
+                player.play(false);
+                player.seek(player.position() + owner.document.sequence.frameSeconds());
+            }
+            else
+            {
+                owner.runUi("movie.transport.step", movie::object({ { "frames", 1 } }));
+            }
+        };
+        addAndMakeVisible(playBtn);
+        addAndMakeVisible(stopBtn);
+        addAndMakeVisible(stepBackBtn);
+        addAndMakeVisible(stepFwdBtn);
+    }
+
+    void paint(juce::Graphics& g) override
+    {
+        g.fillAll(juce::Colour(0xff0b0f17));
+        auto bounds = getLocalBounds().reduced(8);
+        auto controls = bounds.removeFromBottom(32);
+        auto scrubBar = bounds.removeFromBottom(16).reduced(2, 4);
+
+        const auto frame = player.preview();
+        if (frame.isValid())
+        {
+            g.drawImageWithin(frame, bounds.getX(), bounds.getY(), bounds.getWidth(), bounds.getHeight(),
+                              juce::RectanglePlacement::centred, false);
+        }
+        else
+        {
+            g.setColour(juce::Colours::white.withAlpha(0.35f));
+            g.setFont(juce::FontOptions(14.0f));
+            g.drawText(sourceMode ? "Source Monitor: Select a media asset to preview"
+                                  : "Program Monitor: Place media on timeline to preview",
+                       bounds, juce::Justification::centred);
+        }
+
+        // Overlay badge
+        g.setColour(juce::Colours::black.withAlpha(0.6f));
+        g.fillRoundedRectangle((float) bounds.getX() + 8.0f, (float) bounds.getY() + 8.0f, 220.0f, 24.0f, 4.0f);
+        g.setColour(juce::Colours::white.withAlpha(0.9f));
+        g.setFont(juce::FontOptions(12.0f, juce::Font::bold));
+        const auto& seq = owner.document.sequence;
+        const auto tc = formatTimecode(player.position(), seq.fpsNum, seq.fpsDen);
+        g.drawText((sourceMode ? "SRC  " : "PGM  ") + tc,
+                   bounds.getX() + 14, bounds.getY() + 8, 208, 24, juce::Justification::centredLeft);
+
+        // Scrub bar
+        g.setColour(juce::Colour(0xff1e293b));
+        g.fillRoundedRectangle(scrubBar.toFloat(), 3.0f);
+        double dur = seq.duration();
+        if (sourceMode)
+        {
+            if (const auto* m = seq.findMedia(owner.selectedMedia))
+                dur = m->info.duration;
+            else
+                dur = 0.0;
+        }
+        if (dur > 0.0)
+        {
+            const float ratio = (float) juce::jlimit(0.0, 1.0, player.position() / dur);
+            auto filled = scrubBar.withWidth((int) std::lround(scrubBar.getWidth() * ratio));
+            g.setColour(creation_movie::branding::accentColour());
+            g.fillRoundedRectangle(filled.toFloat(), 3.0f);
+        }
+        playBtn.setButtonText(player.playing() ? "Pause" : "Play");
+        juce::ignoreUnused(controls);
+    }
+
+    void resized() override
+    {
+        auto row = getLocalBounds().reduced(8).removeFromBottom(28);
+        stepBackBtn.setBounds(row.removeFromLeft(54));
+        row.removeFromLeft(4);
+        playBtn.setBounds(row.removeFromLeft(68));
+        row.removeFromLeft(4);
+        stopBtn.setBounds(row.removeFromLeft(58));
+        row.removeFromLeft(4);
+        stepFwdBtn.setBounds(row.removeFromLeft(54));
+    }
+
+    void mouseDown(const juce::MouseEvent& e) override { scrubAt(e); }
+    void mouseDrag(const juce::MouseEvent& e) override { scrubAt(e); }
+
+private:
+    void scrubAt(const juce::MouseEvent& e)
+    {
+        auto bounds = getLocalBounds().reduced(8);
+        bounds.removeFromBottom(32);
+        auto scrubBar = bounds.removeFromBottom(16);
+        if (! scrubBar.expanded(0, 6).contains(e.getPosition()))
+            return;
+
+        double dur = owner.document.sequence.duration();
+        if (sourceMode)
+        {
+            if (const auto* m = owner.document.sequence.findMedia(owner.selectedMedia))
+                dur = m->info.duration;
+            else
+                dur = 0.0;
+        }
+        if (dur <= 0.0)
+            return;
+
+        const double ratio = juce::jlimit(0.0, 1.0, (e.x - scrubBar.getX()) / (double) std::max(1, scrubBar.getWidth()));
+        const double t = owner.document.sequence.snap(ratio * dur);
+        if (sourceMode)
+            player.seek(t);
+        else
+            owner.runUi("movie.transport.seek", movie::object({ { "time", t } }));
+    }
+
+    MainComponent& owner;
+    movie::Playback& player;
+    bool sourceMode = false;
+    juce::TextButton playBtn { "Play" }, stopBtn { "Stop" }, stepBackBtn { "< 1f" }, stepFwdBtn { "1f >" };
+};
+
+// =============================================================================
+// Timeline Panel
+// =============================================================================
+class MainComponent::Timeline final : public juce::Component
+{
+public:
+    explicit Timeline(MainComponent& o) : owner(o) {}
+
+    void paint(juce::Graphics& g) override
+    {
+        g.fillAll(juce::Colour(0xff0f1623));
+        const auto bounds = getLocalBounds();
+        constexpr int headerW = 92;
+        constexpr int rulerH = 26;
+        constexpr int trackH = 44;
+        constexpr int numTracks = 4;
+
+        // Track headers
+        for (int t = 0; t < numTracks; ++t)
+        {
+            const int y = rulerH + t * trackH;
+            juce::Rectangle<int> hdr(0, y, headerW, trackH - 2);
+            g.setColour(juce::Colour(0xff182234));
+            g.fillRect(hdr);
+            g.setColour(juce::Colours::white.withAlpha(0.75f));
+            g.setFont(juce::FontOptions(12.0f, juce::Font::bold));
+            g.drawText(t < 2 ? ("V" + juce::String(t + 1) + " Video") : ("A" + juce::String(t - 1) + " Audio"),
+                       hdr.reduced(8, 0), juce::Justification::centredLeft);
+
+            juce::Rectangle<int> lane(headerW, y, bounds.getWidth() - headerW, trackH - 2);
+            g.setColour(juce::Colour(t % 2 == 0 ? 0xff131c2b : 0xff111927));
+            g.fillRect(lane);
+        }
+
+        // Ruler
+        juce::Rectangle<int> ruler(headerW, 0, bounds.getWidth() - headerW, rulerH);
+        g.setColour(juce::Colour(0xff1b2538));
+        g.fillRect(ruler);
+
+        const double pps = std::max(5.0, owner.pixelsPerSecond);
+        const double stepSec = pps > 80.0 ? 0.5 : (pps > 30.0 ? 1.0 : (pps > 12.0 ? 5.0 : 10.0));
+        const double startSec = std::floor(owner.visibleStart / stepSec) * stepSec;
+        const double endSec = owner.visibleStart + ruler.getWidth() / pps;
+
+        g.setFont(juce::FontOptions(11.0f));
+        for (double s = startSec; s <= endSec; s += stepSec)
+        {
+            if (s < 0.0) continue;
+            const int x = headerW + (int) std::lround((s - owner.visibleStart) * pps);
+            if (x < headerW || x > bounds.getWidth()) continue;
+            g.setColour(juce::Colours::white.withAlpha(0.25f));
+            g.drawVerticalLine(x, (float) rulerH - 8.0f, (float) bounds.getHeight());
+            g.setColour(juce::Colours::white.withAlpha(0.75f));
+            g.drawText(juce::String(s, stepSec < 1.0 ? 1 : 0) + "s", x + 3, 4, 48, 18, juce::Justification::centredLeft);
+        }
+
+        // Clips
+        for (const auto& c : owner.document.sequence.clips)
+        {
+            const int track = juce::jlimit(0, numTracks - 1, c.trackIndex);
+            const int y = rulerH + track * trackH + 3;
+            const int x1 = headerW + (int) std::lround((c.startSeconds - owner.visibleStart) * pps);
+            const int x2 = headerW + (int) std::lround((c.startSeconds + c.durationSeconds - owner.visibleStart) * pps);
+            const int w = std::max(6, x2 - x1);
+            juce::Rectangle<int> box(x1, y, w, trackH - 8);
+            if (box.getRight() < headerW || box.getX() > bounds.getWidth())
+                continue;
+
+            const bool selected = (c.id == owner.selectedClip);
+            const bool isTitle = c.videoParams["title"].toString().isNotEmpty();
+            const juce::Colour baseCol = isTitle ? juce::Colour(0xff8b5cf6)
+                                                 : (c.kind == creation::timeline::ClipKind::audio ? juce::Colour(0xffea580c)
+                                                                                                  : juce::Colour(0xff2563eb));
+            g.setColour(baseCol.withAlpha(selected ? 0.9f : 0.68f));
+            g.fillRoundedRectangle(box.toFloat(), 5.0f);
+            g.setColour(selected ? juce::Colours::yellow : juce::Colours::white.withAlpha(0.35f));
+            g.drawRoundedRectangle(box.toFloat(), 5.0f, selected ? 2.0f : 1.0f);
+
+            g.setColour(juce::Colours::white);
+            g.setFont(juce::FontOptions(12.0f, juce::Font::bold));
+            const juce::String label = c.displayName + " ["
+                + juce::String(c.sourceStartSeconds, 2) + "s.."
+                + juce::String(c.sourceStartSeconds + c.durationSeconds, 2) + "s]";
+            g.drawText(label, box.reduced(6, 2), juce::Justification::centredLeft, true);
+        }
+
+        // Playhead
+        const int playX = headerW + (int) std::lround((owner.playback.position() - owner.visibleStart) * pps);
+        if (playX >= headerW && playX <= bounds.getWidth())
+        {
+            g.setColour(juce::Colour(0xfff43f5e));
+            g.drawVerticalLine(playX, 0.0f, (float) bounds.getHeight());
+            juce::Path head;
+            head.addTriangle((float) playX - 6.0f, 0.0f, (float) playX + 6.0f, 0.0f, (float) playX, 10.0f);
+            g.fillPath(head);
+        }
+    }
+
+    void mouseDown(const juce::MouseEvent& e) override
+    {
+        constexpr int headerW = 92;
+        constexpr int rulerH = 26;
+        constexpr int trackH = 44;
+        const double pps = std::max(5.0, owner.pixelsPerSecond);
+        const double clickTime = std::max(0.0, owner.visibleStart + (e.x - headerW) / pps);
+
+        draggingClipId.clear();
+        if (e.y < rulerH)
+        {
+            owner.runUi("movie.transport.seek", movie::object({ { "time", owner.document.sequence.snap(clickTime) } }));
+            return;
+        }
+
+        const int track = juce::jlimit(0, 3, (e.y - rulerH) / trackH);
+        const movie::Clip* hit = nullptr;
+        for (const auto& c : owner.document.sequence.clips)
+        {
+            if (c.trackIndex == track && clickTime >= c.startSeconds && clickTime <= c.startSeconds + c.durationSeconds)
+            {
+                hit = &c;
+                break;
+            }
+        }
+
+        if (hit != nullptr)
+        {
+            owner.selectClip(hit->id);
+            if (e.mods.isPopupMenu())
+            {
+                juce::PopupMenu menu;
+                menu.addItem(1, "Split Clip Here");
+                menu.addItem(2, "Delete Clip");
+                menu.addItem(3, "Ripple Delete Clip");
+                menu.showMenuAsync(
+                    juce::PopupMenu::Options().withTargetScreenArea({ e.getScreenX(), e.getScreenY(), 1, 1 }),
+                    [this, clipId = hit->id, splitAt = owner.document.sequence.snap(clickTime)](int res)
+                    {
+                        if (res == 1)
+                            owner.runUi("movie.timeline.split", movie::object({ { "clipId", clipId }, { "time", splitAt } }));
+                        else if (res == 2)
+                            owner.runUi("movie.timeline.remove", movie::object({ { "clipId", clipId }, { "ripple", false } }));
+                        else if (res == 3)
+                            owner.runUi("movie.timeline.remove", movie::object({ { "clipId", clipId }, { "ripple", true } }));
+                    });
+                return;
+            }
+            draggingClipId = hit->id;
+            dragOffsetSeconds = clickTime - hit->startSeconds;
+        }
+        else
+        {
+            if (e.mods.isPopupMenu())
+            {
+                juce::PopupMenu menu;
+                menu.addItem(1, "Seek Playhead Here");
+                menu.addItem(2, "Place Selected Media Here", owner.selectedMedia.isNotEmpty());
+                menu.addItem(3, "Add Title Clip Here...");
+                menu.showMenuAsync(
+                    juce::PopupMenu::Options().withTargetScreenArea({ e.getScreenX(), e.getScreenY(), 1, 1 }),
+                    [this, at = owner.document.sequence.snap(clickTime), track](int res)
+                    {
+                        if (res == 1)
+                            owner.runUi("movie.transport.seek", movie::object({ { "time", at } }));
+                        else if (res == 2 && owner.selectedMedia.isNotEmpty())
+                            owner.runUi("movie.timeline.place", movie::object({ { "assetId", owner.selectedMedia }, { "start", at }, { "track", track } }));
+                        else if (res == 3)
+                            owner.titleDialog();
+                    });
+                return;
+            }
+            owner.runUi("movie.transport.seek", movie::object({ { "time", owner.document.sequence.snap(clickTime) } }));
+        }
+    }
+
+    void mouseDrag(const juce::MouseEvent& e) override
+    {
+        constexpr int headerW = 92;
+        constexpr int rulerH = 26;
+        const double pps = std::max(5.0, owner.pixelsPerSecond);
+        const double clickTime = std::max(0.0, owner.visibleStart + (e.x - headerW) / pps);
+        if (draggingClipId.isEmpty() || e.y < rulerH)
+        {
+            owner.runUi("movie.transport.seek", movie::object({ { "time", owner.document.sequence.snap(clickTime) } }));
+        }
+    }
+
+    void mouseUp(const juce::MouseEvent& e) override
+    {
+        if (draggingClipId.isEmpty())
+            return;
+
+        constexpr int headerW = 92;
+        constexpr int rulerH = 26;
+        constexpr int trackH = 44;
+        const double pps = std::max(5.0, owner.pixelsPerSecond);
+        const double dropTime = std::max(0.0, owner.visibleStart + (e.x - headerW) / pps - dragOffsetSeconds);
+        const int dropTrack = juce::jlimit(0, 3, (e.y - rulerH) / trackH);
+        const int idx = owner.document.sequence.findClip(draggingClipId);
+        if (idx >= 0)
+        {
+            const auto& c = owner.document.sequence.clips[(size_t) idx];
+            if (std::abs(c.startSeconds - owner.document.sequence.snap(dropTime)) >= owner.document.sequence.frameSeconds() * 0.5
+                || c.trackIndex != dropTrack)
+            {
+                owner.runUi("movie.timeline.move", movie::object({
+                    { "clipId", draggingClipId },
+                    { "start", owner.document.sequence.snap(dropTime) },
+                    { "track", dropTrack }
+                }));
+            }
+        }
+        draggingClipId.clear();
+    }
+
+private:
+    MainComponent& owner;
+    juce::String draggingClipId;
+    double dragOffsetSeconds = 0.0;
+};
+
+// =============================================================================
+// Inspector Panel
+// =============================================================================
+class MainComponent::Inspector final : public juce::Component
+{
+public:
+    explicit Inspector(MainComponent& o) : owner(o)
+    {
+        auto setupSlider = [this](juce::Slider& s, double minV, double maxV, double stepV)
+        {
+            s.setSliderStyle(juce::Slider::LinearHorizontal);
+            s.setTextBoxStyle(juce::Slider::TextBoxRight, false, 64, 22);
+            s.setRange(minV, maxV, stepV);
+            addAndMakeVisible(s);
+        };
+        setupSlider(gainSlider, 0.0, 4.0, 0.05);
+        setupSlider(opacitySlider, 0.0, 1.0, 0.05);
+
+        gainSlider.onDragEnd = [this] { applyLevels(); };
+        opacitySlider.onDragEnd = [this] { applyLevels(); };
+
+        applyTrimBtn.onClick = [this]
+        {
+            if (owner.selectedClip.isEmpty()) return;
+            owner.runUi("movie.timeline.trim", movie::object({
+                { "clipId", owner.selectedClip },
+                { "sourceIn", sourceInEditor.getText().getDoubleValue() },
+                { "duration", durationEditor.getText().getDoubleValue() }
+            }));
+        };
+        deleteBtn.onClick = [this]
+        {
+            if (owner.selectedClip.isNotEmpty())
+                owner.runUi("movie.timeline.remove", movie::object({ { "clipId", owner.selectedClip }, { "ripple", false } }));
+        };
+        rippleBtn.onClick = [this]
+        {
+            if (owner.selectedClip.isNotEmpty())
+                owner.runUi("movie.timeline.remove", movie::object({ { "clipId", owner.selectedClip }, { "ripple", true } }));
+        };
+
+        addAndMakeVisible(sourceInEditor);
+        addAndMakeVisible(durationEditor);
+        addAndMakeVisible(applyTrimBtn);
+        addAndMakeVisible(deleteBtn);
+        addAndMakeVisible(rippleBtn);
+    }
+
+    void syncFromSelection()
+    {
+        const int idx = owner.document.sequence.findClip(owner.selectedClip);
+        const bool hasClip = idx >= 0;
+        gainSlider.setEnabled(hasClip);
+        opacitySlider.setEnabled(hasClip);
+        sourceInEditor.setEnabled(hasClip);
+        durationEditor.setEnabled(hasClip);
+        applyTrimBtn.setEnabled(hasClip);
+        deleteBtn.setEnabled(hasClip);
+        rippleBtn.setEnabled(hasClip);
+
+        if (hasClip)
+        {
+            const auto& c = owner.document.sequence.clips[(size_t) idx];
+            gainSlider.setValue((double) c.videoParams.getWithDefault("gain", 1.0), juce::dontSendNotification);
+            opacitySlider.setValue((double) c.videoParams.getWithDefault("opacity", 1.0), juce::dontSendNotification);
+            sourceInEditor.setText(juce::String(c.sourceStartSeconds, 3), juce::dontSendNotification);
+            durationEditor.setText(juce::String(c.durationSeconds, 3), juce::dontSendNotification);
+        }
+        repaint();
+    }
+
+    void paint(juce::Graphics& g) override
+    {
+        g.fillAll(creation_movie::branding::panelColour());
+        auto area = getLocalBounds().reduced(12);
+
+        g.setColour(juce::Colours::white);
+        g.setFont(juce::FontOptions(14.0f, juce::Font::bold));
+        g.drawText("Clip & Media Inspector", area.removeFromTop(24), juce::Justification::centredLeft);
+
+        const int idx = owner.document.sequence.findClip(owner.selectedClip);
+        if (idx >= 0)
+        {
+            const auto& c = owner.document.sequence.clips[(size_t) idx];
+            g.setColour(juce::Colours::white.withAlpha(0.85f));
+            g.setFont(juce::FontOptions(12.5f));
+            juce::String info;
+            info << "Clip: " << c.displayName << " (Track " << c.trackIndex << ")\n"
+                 << "Timeline Start: " << juce::String(c.startSeconds, 3) << "s\n"
+                 << "Source Range: " << juce::String(c.sourceStartSeconds, 3) << "s -> "
+                 << juce::String(c.sourceStartSeconds + c.durationSeconds, 3) << "s";
+            g.drawFittedText(info, area.removeFromTop(62), juce::Justification::topLeft, 4);
+        }
+        else
+        {
+            g.setColour(juce::Colours::white.withAlpha(0.45f));
+            g.setFont(juce::FontOptions(12.5f));
+            g.drawText("No timeline clip selected.", area.removeFromTop(62), juce::Justification::centredLeft);
+        }
+
+        g.setColour(juce::Colours::white.withAlpha(0.75f));
+        g.setFont(juce::FontOptions(12.0f));
+        g.drawText("Gain", 12, 102, 70, 24, juce::Justification::centredLeft);
+        g.drawText("Opacity", 12, 132, 70, 24, juce::Justification::centredLeft);
+        g.drawText("Source In (s)", 12, 166, 86, 24, juce::Justification::centredLeft);
+        g.drawText("Duration (s)", 12, 196, 86, 24, juce::Justification::centredLeft);
+    }
+
+    void resized() override
+    {
+        const int w = std::max(80, getWidth() - 106);
+        gainSlider.setBounds(94, 102, w, 24);
+        opacitySlider.setBounds(94, 132, w, 24);
+        sourceInEditor.setBounds(100, 166, w - 6, 24);
+        durationEditor.setBounds(100, 196, w - 6, 24);
+        applyTrimBtn.setBounds(12, 228, getWidth() - 24, 26);
+        const int half = (getWidth() - 28) / 2;
+        deleteBtn.setBounds(12, 260, half, 26);
+        rippleBtn.setBounds(16 + half, 260, half, 26);
+    }
+
+private:
+    void applyLevels()
+    {
+        if (owner.selectedClip.isEmpty()) return;
+        owner.runUi("movie.timeline.levels", movie::object({
+            { "clipId", owner.selectedClip },
+            { "gain", gainSlider.getValue() },
+            { "opacity", opacitySlider.getValue() }
+        }));
+    }
+
+    MainComponent& owner;
+    juce::Slider gainSlider, opacitySlider;
+    juce::TextEditor sourceInEditor, durationEditor;
+    juce::TextButton applyTrimBtn { "Apply Source In / Duration" };
+    juce::TextButton deleteBtn { "Delete Clip" }, rippleBtn { "Ripple Delete" };
+};
+
+// =============================================================================
+// MainComponent Implementation
+// =============================================================================
 MainComponent::MainComponent()
 {
-    juce::String suiteSettingsError;
-    suiteSettings = creation::suite::SuiteSettingsStore().load(suiteSettingsError);
+    setLookAndFeel(&look);
+    setWantsKeyboardFocus(true);
 
-    audioFormatManager.registerBasicFormats();
+    juce::String settingsErr;
+    creation::suite::SuiteSettingsStore settingsStore;
+    settings = settingsStore.load(settingsErr);
 
-    titleLabel.setText("Djehuti Movie", juce::dontSendNotification);
-    titleLabel.setFont(juce::Font(33.0f, juce::Font::bold));
-    titleLabel.setColour(juce::Label::textColourId, juce::Colours::white);
-    addAndMakeVisible(titleLabel);
+    const auto audioErr = playback.initialiseAudio();
+    sourcePlayback.initialiseAudio();
+    if (audioErr.isNotEmpty())
+        lastStatus = "Audio output unavailable (" + audioErr + "); using wall-clock preview transport.";
 
-    subtitleLabel.setText("Suite-native editing, preview, and picture assembly with room for FRust and render workflows.",
-                          juce::dontSendNotification);
-    subtitleLabel.setColour(juce::Label::textColourId, juce::Colour(0xffb9c8db));
-    addAndMakeVisible(subtitleLabel);
+    header.setAppTitle("Djehuti Movie");
+    header.setLogoImage(creation::ui::getSuiteLogoImage(creation::ui::SuiteLogoId::movie));
+    header.setSelectedLogoId(creation::ui::SuiteLogoId::movie);
+    header.setSeparatePauseButtonVisible(true);
+    header.setTransportButtonVisible(CreationSuiteHeaderBar::TransportButtonSlot::record, false);
+    header.setTransportButtonVisible(CreationSuiteHeaderBar::TransportButtonSlot::click, false);
+    header.setTransportButtonVisible(CreationSuiteHeaderBar::TransportButtonSlot::loop, false);
+    header.onPlay = [this] { runUi("movie.transport.play"); };
+    header.onPause = [this] { runUi("movie.transport.pause"); };
+    header.onStop = [this] { runUi("movie.transport.stop"); };
+    header.onRewind = [this] { runUi("movie.transport.step", movie::object({ { "frames", -1 } })); };
+    header.onFastForward = [this] { runUi("movie.transport.step", movie::object({ { "frames", 1 } })); };
+    header.onRewindToStart = [this] { runUi("movie.transport.seek", movie::object({ { "time", 0.0 } })); };
+    header.onFastForwardToEnd = [this] { runUi("movie.transport.seek", movie::object({ { "time", document.sequence.duration() } })); };
+    header.onProjectMenuRequested = [this] { openProjectMenu(); };
+    header.onSuiteRequested = [this] { showSettings(); };
+    addAndMakeVisible(header);
 
-    projectChipLabel.setText("Project: " + projectName, juce::dontSendNotification);
-    projectChipLabel.setJustificationType(juce::Justification::centred);
-    projectChipLabel.setColour(juce::Label::textColourId, juce::Colours::white);
-    addAndMakeVisible(projectChipLabel);
+    addAndMakeVisible(menu);
+    addAndMakeVisible(status);
+    addAndMakeVisible(timecode);
+    addAndMakeVisible(split);
+    addAndMakeVisible(title);
+    addAndMakeVisible(fit);
+    addAndMakeVisible(cancelJob);
+    addAndMakeVisible(zoom);
 
-    runtimeLabel.setText(creation_movie::language::getLanguageRuntimeSummary(), juce::dontSendNotification);
-    runtimeLabel.setColour(juce::Label::textColourId, creation_movie::branding::accentColour().brighter(0.15f));
-    addAndMakeVisible(runtimeLabel);
+    timecode.setFont(juce::FontOptions(14.0f, juce::Font::bold));
+    timecode.setColour(juce::Label::textColourId, juce::Colours::white);
+    status.setColour(juce::Label::textColourId, juce::Colours::white.withAlpha(0.85f));
 
-    statusLabel.setColour(juce::Label::textColourId, juce::Colour(0xffd9e1ec));
-    addAndMakeVisible(statusLabel);
+    split.onClick = [this]
+    {
+        if (selectedClip.isEmpty()) { warn("Select a timeline clip first."); return; }
+        runUi("movie.timeline.split", movie::object({ { "clipId", selectedClip }, { "time", playback.position() } }));
+    };
+    title.onClick = [this] { titleDialog(); };
+    fit.onClick = [this]
+    {
+        visibleStart = 0.0;
+        const double dur = std::max(5.0, document.sequence.duration());
+        const int availW = std::max(200, (timeline ? timeline->getWidth() : 800) - 110);
+        pixelsPerSecond = juce::jlimit(5.0, 200.0, availW / dur);
+        zoom.setValue(pixelsPerSecond, juce::dontSendNotification);
+        if (timeline) timeline->repaint();
+    };
+    cancelJob.onClick = [this] { runUi("movie.job.cancel"); };
 
-    rewindButton.setLookAndFeel(&getStationStyleTransportLookAndFeel());
-    fastForwardButton.setLookAndFeel(&getStationStyleTransportLookAndFeel());
-    stopButton.setLookAndFeel(&getStationStyleTransportLookAndFeel());
-    playButton.setLookAndFeel(&getStationStyleTransportLookAndFeel());
-    scrubButton.setLookAndFeel(&getStationStyleTransportLookAndFeel());
-    recordButton.setLookAndFeel(&getStationStyleTransportLookAndFeel());
+    zoom.setSliderStyle(juce::Slider::LinearHorizontal);
+    zoom.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+    zoom.setRange(5.0, 200.0, 1.0);
+    zoom.setValue(pixelsPerSecond, juce::dontSendNotification);
+    zoom.onValueChange = [this]
+    {
+        pixelsPerSecond = zoom.getValue();
+        if (timeline) timeline->repaint();
+    };
 
-    rewindButton.setButtonText("rewind");
-    fastForwardButton.setButtonText("forward");
-    stopButton.setButtonText("stop");
-    playButton.setButtonText("play");
-    scrubButton.setButtonText("scrub");
-    recordButton.setButtonText("record");
-    recordButton.setName("recordButton");
-    scrubButton.setName("scrubButton");
-    rewindButton.setTooltip("Move the visible timeline earlier");
-    fastForwardButton.setTooltip("Move the visible timeline later");
-    stopButton.setTooltip("Stop playback");
-    playButton.setTooltip("Play from the current playhead");
-    scrubButton.setTooltip("Toggle scrub mode");
-    recordButton.setTooltip("Arm transport recording mode");
+    library = std::make_unique<Library>(*this);
+    monitor = std::make_unique<Monitor>(*this, playback, false);
+    sourceMonitor = std::make_unique<Monitor>(*this, sourcePlayback, true);
+    timeline = std::make_unique<Timeline>(*this);
+    inspector = std::make_unique<Inspector>(*this);
+    chat = std::make_unique<creation::agent::EngineerChat>(engineer);
+    cards = std::make_unique<creation::agent::CardsPanel>(engineer);
 
-    openButton.onClick = [this] { openProject(); };
-    saveButton.onClick = [this] { saveProject(); };
-    rewindButton.onClick = [this] { scrollTimeline(-(transportState.visibleLengthSeconds * 0.25)); };
-    fastForwardButton.onClick = [this] { scrollTimeline(transportState.visibleLengthSeconds * 0.25); };
-    recordButton.onClick = [this] { toggleRecording(); };
-    importButton.onClick = [this] { importMediaFiles(); };
-    placeButton.onClick = [this] { placeSelectedAssetOnTimeline(); };
-    zoomOutButton.onClick = [this] { zoomTimeline(1.35); };
-    zoomInButton.onClick = [this] { zoomTimeline(0.75); };
-    scrollLeftButton.onClick = [this] { scrollTimeline(-(transportState.visibleLengthSeconds * 0.35)); };
-    scrollRightButton.onClick = [this] { scrollTimeline(transportState.visibleLengthSeconds * 0.35); };
-    markerButton.onClick = [this] { addMarkerAtPlayhead(); };
-    regionButton.onClick = [this] { createRegionFromMarkers(); };
-    splitButton.onClick = [this] { splitSelectedClip(); };
-    stepBackButton.onClick = [this] { stepPlayheadByFrames(-1); };
-    stepForwardButton.onClick = [this] { stepPlayheadByFrames(1); };
-    playButton.onClick = [this] { togglePlayback(); };
-    stopButton.onClick = [this] { stopPlayback(); };
-    scrubButton.onClick = [this] { toggleScrubMode(); };
-    previewButton.onClick = [this] { showPreviewWindow(); };
-    eulaButton.onClick = [this] { showEulaWindow(); };
+    dock = std::make_unique<CreationDock::DockManager>(*this);
+    using Zone = CreationDock::DockTargetZone;
+    dock->registerPanel("library", "Media Library", std::make_unique<NonOwningHost>(*library), Zone::Left);
+    dock->registerPanel("source", "Source Monitor", std::make_unique<NonOwningHost>(*sourceMonitor), Zone::CenterTab);
+    dock->registerPanel("program", "Program Monitor", std::make_unique<NonOwningHost>(*monitor), Zone::CenterTab);
+    dock->registerPanel("timeline", "Timeline", std::make_unique<NonOwningHost>(*timeline), Zone::Bottom);
+    dock->registerPanel("inspector", "Inspector", std::make_unique<NonOwningHost>(*inspector), Zone::Right);
+    dock->registerPanel("engineer", "Virtual Engineer", std::make_unique<NonOwningHost>(*chat), Zone::Right);
+    dock->registerPanel("cards", "Cards", std::make_unique<NonOwningHost>(*cards), Zone::Right);
+    dock->activatePanel("program");
+    dock->activatePanel("inspector");
+    addAndMakeVisible(*dock);
 
-    addAndMakeVisible(rewindButton);
-    addAndMakeVisible(fastForwardButton);
-    addAndMakeVisible(recordButton);
-    addAndMakeVisible(openButton);
-    addAndMakeVisible(saveButton);
-    addAndMakeVisible(importButton);
-    addAndMakeVisible(placeButton);
-    addAndMakeVisible(zoomOutButton);
-    addAndMakeVisible(zoomInButton);
-    addAndMakeVisible(scrollLeftButton);
-    addAndMakeVisible(scrollRightButton);
-    addAndMakeVisible(markerButton);
-    addAndMakeVisible(regionButton);
-    addAndMakeVisible(splitButton);
-    addAndMakeVisible(stepBackButton);
-    addAndMakeVisible(stepForwardButton);
-    addAndMakeVisible(playButton);
-    addAndMakeVisible(stopButton);
-    addAndMakeVisible(scrubButton);
-    addAndMakeVisible(previewButton);
-    addAndMakeVisible(eulaButton);
+    {
+        juce::String layoutErr;
+        const auto savedLayout = creation::services::SuiteVfsJsonStore::loadJson(kMovieLayoutEntry, layoutErr);
+        if (savedLayout.isObject())
+            dock->applyLayout(savedLayout);
+    }
 
-    seedDemoContent();
+    document.changed = [this] { changed(); };
 
-    previewSurface = std::make_unique<PreviewSurface>(transportState, assets, timelineClips, selectedAssetIndex, selectedClipIndex);
-    timelineCanvas = std::make_unique<TimelineCanvas>(transportState,
-                                                      timelineClips,
-                                                      timelineMarkers,
-                                                      timelineRegions,
-                                                      selectedClipIndex,
-                                                      [this](int clipIndex) { selectClip(clipIndex); },
-                                                      [this](int clipIndex, double startSeconds, int laneIndex) { updateClipPlacement(clipIndex, startSeconds, laneIndex); },
-                                                      [this](double timeSeconds) { movePlayheadTo(timeSeconds); });
-    assetLibraryPanel = std::make_unique<AssetLibraryPanel>(assets, selectedAssetIndex, [this](int assetIndex) { selectAsset(assetIndex); });
-    inspectorPanel = std::make_unique<InspectorPanel>(transportState, assets, timelineClips, selectedAssetIndex, selectedClipIndex);
+    // Ensure an active VFS project is open or created
+    {
+        juce::String projErr;
+        auto projects = creation::assets::ProjectContainerService::listProjects(settings, projErr);
+        bool opened = false;
+        for (const auto& summary : projects)
+        {
+            if (creation::assets::ProjectWorkspaceService::openProject(settings, summary.projectId, session, projErr))
+            {
+                juce::MemoryBlock block;
+                if (session.readEntry(kMovieStateEntry, block))
+                {
+                    movie::Sequence loaded;
+                    juce::String loadErr;
+                    if (movie::Sequence::fromJson(juce::JSON::parse(block.toString()), loaded, loadErr))
+                    {
+                        loaded.projectId = session.getProjectId();
+                        document.replace(std::move(loaded), true);
+                        opened = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (! opened)
+        {
+            if (creation::assets::ProjectWorkspaceService::createProject(
+                    settings, creation::assets::SuiteAppDomain::movie,
+                    "Untitled Movie", "0.0.1", "0.0.1", session, projErr))
+            {
+                movie::Sequence fresh;
+                fresh.projectId = session.getProjectId();
+                fresh.name = "Untitled Movie";
+                document.replace(std::move(fresh), true);
+            }
+            else if (projErr.isNotEmpty())
+            {
+                lastStatus = "Project init note: " + projErr;
+            }
+        }
+    }
 
-    // previewSurface/timelineCanvas/assetLibraryPanel/inspectorPanel are reparented
-    // into dock panels below (see initialiseDockingWorkspace), not added directly here.
+    registerCommands();
+    engineer.setProjectId(session.isValid() ? session.getProjectId() : juce::String());
+    cards->refresh();
 
-    updateTransportButtons();
-    updateStatusText();
+    juce::String apiErr;
+    if (! api.start(apiErr))
+        lastStatus = "Agent API did not start: " + apiErr;
+    else if (lastStatus.isEmpty())
+        lastStatus = "Ready (FFmpeg " + movie::codecVersion() + ", API port " + juce::String(api.getPort()) + ")";
 
-    menuBar = std::make_unique<juce::MenuBarComponent>(static_cast<juce::MenuBarModel*>(this));
-    // Nothing in this app sets a suite-wide dark LookAndFeel, so MenuBarComponent
-    // falls back to LookAndFeel_V4::drawMenuBarItem/drawMenuBarBackground, which key
-    // off TextButton colour ids (not PopupMenu's) -- the default scheme renders dark
-    // text on a dark bar, invisible against this app's dark theme without this.
-    menuBar->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1c2230));
-    menuBar->setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xff2a3244));
-    menuBar->setColour(juce::TextButton::textColourOffId, juce::Colours::white);
-    menuBar->setColour(juce::TextButton::textColourOnId, juce::Colours::white);
-    addAndMakeVisible(*menuBar);
-
-    dockManager = std::make_unique<CreationDock::DockManager>(*this);
-    addAndMakeVisible(*dockManager);
-    initialiseDockingWorkspace();
-    // setSize() below fires resized() immediately; menuBar/dockManager must already
-    // exist and be registered before that happens, or they're silently left at zero
-    // bounds (addAndMakeVisible alone doesn't trigger a layout pass).
-    resized();
-
-    setSize(1480, 920);
+    changed();
+    setSize(1520, 940);
     startTimerHz(30);
 }
 
 MainComponent::~MainComponent()
 {
-    rewindButton.setLookAndFeel(nullptr);
-    fastForwardButton.setLookAndFeel(nullptr);
-    stopButton.setLookAndFeel(nullptr);
-    playButton.setLookAndFeel(nullptr);
-    scrubButton.setLookAndFeel(nullptr);
-    recordButton.setLookAndFeel(nullptr);
-    closePreviewWindow();
-    closeEulaWindow();
+    closing = true;
+    stopTimer();
+    if (job)
+        job->cancel = true;
+    if (worker.joinable())
+        worker.join();
+    api.stop();
+    if (dock)
+    {
+        juce::String layoutErr;
+        creation::services::SuiteVfsJsonStore::saveJson(kMovieLayoutEntry, dock->captureLayout(), layoutErr);
+    }
+    setLookAndFeel(nullptr);
 }
 
 void MainComponent::paint(juce::Graphics& g)
 {
     g.fillAll(creation_movie::branding::backgroundColour());
-
-    auto chrome = getLocalBounds().toFloat().reduced(14.0f);
-    g.setColour(juce::Colour(0xff111827));
-    g.fillRoundedRectangle(chrome, 26.0f);
-    g.setColour(panelOutlineColour());
-    g.drawRoundedRectangle(chrome, 26.0f, 1.4f);
-
-    auto header = juce::Rectangle<float>(chrome.getX() + 16.0f, chrome.getY() + 16.0f, chrome.getWidth() - 32.0f, 108.0f);
-    g.setColour(juce::Colour(0xff0d141f));
-    g.fillRoundedRectangle(header, 22.0f);
-    g.setColour(creation_movie::branding::accentColour().withAlpha(0.30f));
-    g.drawRoundedRectangle(header, 22.0f, 1.0f);
-
-    auto transportGlow = juce::Rectangle<float>(chrome.getX() + 446.0f, chrome.getY() + 30.0f, 468.0f, 52.0f);
-    g.setColour(isRecording ? juce::Colour(0x33ff5f73) : juce::Colour(0x2259dfff));
-    g.fillRoundedRectangle(transportGlow, 18.0f);
-    g.setColour(isRecording ? juce::Colour(0xffff6b7c) : juce::Colour(0xff59dfff).withAlpha(0.65f));
-    g.drawRoundedRectangle(transportGlow, 18.0f, isRecording ? 1.8f : 1.0f);
 }
 
 void MainComponent::resized()
 {
-    auto area = getLocalBounds().reduced(30, 26);
-    auto header = area.removeFromTop(112);
-    area.removeFromTop(16);
+    auto area = getLocalBounds();
+    header.setBounds(area.removeFromTop(CreationSuiteHeaderBar::preferredHeight));
 
-    auto titleArea = header.removeFromLeft(430);
-    titleLabel.setBounds(titleArea.removeFromTop(42));
-    subtitleLabel.setBounds(titleArea.removeFromTop(26));
-    runtimeLabel.setBounds(titleArea.removeFromTop(22));
+    auto topBar = area.removeFromTop(30);
+    menu.setBounds(topBar.removeFromLeft(300));
+    split.setBounds(topBar.removeFromLeft(66).reduced(2));
+    title.setBounds(topBar.removeFromLeft(66).reduced(2));
+    fit.setBounds(topBar.removeFromLeft(90).reduced(2));
+    cancelJob.setBounds(topBar.removeFromLeft(86).reduced(2));
+    zoom.setBounds(topBar.removeFromLeft(130).reduced(4));
+    timecode.setBounds(topBar.removeFromLeft(130).reduced(4, 0));
+    status.setBounds(topBar.reduced(6, 0));
 
-    auto transportHeader = header.removeFromLeft(490);
-    auto transportRow = transportHeader.removeFromTop(52);
-    rewindButton.setBounds(transportRow.removeFromLeft(62).reduced(4, 2));
-    fastForwardButton.setBounds(transportRow.removeFromLeft(62).reduced(4, 2));
-    stopButton.setBounds(transportRow.removeFromLeft(62).reduced(4, 2));
-    playButton.setBounds(transportRow.removeFromLeft(78).reduced(4, 2));
-    scrubButton.setBounds(transportRow.removeFromLeft(84).reduced(4, 2));
-    recordButton.setBounds(transportRow.removeFromLeft(92).reduced(4, 2));
-
-    auto centerHeader = header.removeFromLeft(260);
-    projectChipLabel.setBounds(centerHeader.removeFromTop(42).reduced(10, 4));
-    statusLabel.setBounds(centerHeader.removeFromTop(26).reduced(10, 0));
-
-    auto controlRow = header.removeFromTop(42);
-    openButton.setBounds(controlRow.removeFromLeft(102).reduced(4, 2));
-    saveButton.setBounds(controlRow.removeFromLeft(102).reduced(4, 2));
-    importButton.setBounds(controlRow.removeFromLeft(106).reduced(4, 2));
-    placeButton.setBounds(controlRow.removeFromLeft(124).reduced(4, 2));
-    zoomOutButton.setBounds(controlRow.removeFromLeft(80).reduced(4, 2));
-    zoomInButton.setBounds(controlRow.removeFromLeft(80).reduced(4, 2));
-    scrollLeftButton.setBounds(controlRow.removeFromLeft(86).reduced(4, 2));
-    scrollRightButton.setBounds(controlRow.removeFromLeft(86).reduced(4, 2));
-    markerButton.setBounds(controlRow.removeFromLeft(84).reduced(4, 2));
-    regionButton.setBounds(controlRow.removeFromLeft(84).reduced(4, 2));
-    splitButton.setBounds(controlRow.removeFromLeft(84).reduced(4, 2));
-    stepBackButton.setBounds(controlRow.removeFromLeft(80).reduced(4, 2));
-    stepForwardButton.setBounds(controlRow.removeFromLeft(80).reduced(4, 2));
-    previewButton.setBounds(controlRow.removeFromLeft(150).reduced(4, 2));
-    eulaButton.setBounds(controlRow.removeFromLeft(64).reduced(4, 2));
-
-    if (menuBar != nullptr)
-        menuBar->setBounds(area.removeFromTop(28));
-
-    area.removeFromTop(8);
-
-    if (dockManager != nullptr)
-        dockManager->setBounds(area);
+    if (dock)
+        dock->setBounds(area);
 }
 
-juce::StringArray MainComponent::getMenuBarNames()
+bool MainComponent::keyPressed(const juce::KeyPress& key)
 {
-    return { "Panels", "Help" };
-}
-
-juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce::String&)
-{
-    juce::PopupMenu menu;
-
-    if (topLevelMenuIndex == 0)
+    if (key == juce::KeyPress::spaceKey)
     {
-        const auto isOpen = [this](const juce::String& id)
+        runUi(playback.playing() ? "movie.transport.pause" : "movie.transport.play");
+        return true;
+    }
+    if (key.getModifiers().isCommandDown() && (key.getKeyCode() == 'z' || key.getKeyCode() == 'Z'))
+    {
+        runUi(key.getModifiers().isShiftDown() ? "movie.timeline.redo" : "movie.timeline.undo");
+        return true;
+    }
+    if (key.getModifiers().isCommandDown() && (key.getKeyCode() == 's' || key.getKeyCode() == 'S'))
+    {
+        runUi("movie.project.save");
+        return true;
+    }
+    return false;
+}
+
+void MainComponent::requestQuit()
+{
+    if (job && job->status == "running")
+        job->cancel = true;
+    if (worker.joinable())
+        worker.join();
+    if (document.dirty && session.isValid())
+        execute("movie.project.save", movie::object({}));
+    juce::JUCEApplication::getInstance()->quit();
+}
+
+MainComponent::Result MainComponent::startJob(const juce::String& type,
+                                              std::function<juce::var(Job&)> work,
+                                              std::function<void(const juce::var&)> completed)
+{
+    if (job && job->status == "running")
+        return Result::failure("job_busy", "A background media job (" + job->type + ") is already running.",
+                               "Wait for the active job to complete or cancel it with movie.job.cancel.");
+
+    if (worker.joinable())
+        worker.join();
+
+    auto active = std::make_shared<Job>();
+    active->id = juce::Uuid().toString();
+    active->type = type;
+    active->status = "running";
+    job = active;
+    refresh();
+
+    worker = std::thread([this, active, work = std::move(work), completed = std::move(completed)]
+    {
+        try
         {
-            return dockManager != nullptr && dockManager->isPanelOpen(id);
+            auto out = work(*active);
+            if (active->cancel.load())
+            {
+                active->status = "cancelled";
+                active->error = "Cancelled.";
+            }
+            else
+            {
+                active->result = out;
+                active->progress = 1.0;
+                active->status = "completed";
+                if (! closing && completed)
+                {
+                    juce::MessageManager::callAsync([this, active, out, completed]
+                    {
+                        if (! closing)
+                        {
+                            completed(out);
+                            lastStatus = "Completed " + active->type + " job.";
+                            refresh();
+                        }
+                    });
+                }
+            }
+        }
+        catch (const std::exception& e)
+        {
+            active->error = e.what();
+            active->status = active->cancel.load() ? "cancelled" : "failed";
+            if (! closing)
+            {
+                juce::MessageManager::callAsync([this, msg = active->error]
+                {
+                    if (! closing)
+                        warn(msg);
+                });
+            }
+        }
+    });
+
+    return Result::success(
+        movie::object({
+            { "jobId", active->id },
+            { "type", active->type },
+            { "status", "scheduled" }
+        }),
+        { "Scheduled background " + type + " job " + active->id });
+}
+
+MainComponent::Result MainComponent::execute(const juce::String& name, const juce::var& a)
+{
+    if (name == "movie.state.get")
+        return Result::success(state());
+    if (name == "movie.jobs.get")
+        return Result::success(jobs());
+    if (name == "movie.job.cancel")
+    {
+        if (job && job->status == "running")
+        {
+            job->cancel = true;
+            lastStatus = "Cancelling " + job->type + " job...";
+            refresh();
+            return Result::success(jobs(), { "Signalled cancellation for job " + job->id });
+        }
+        return Result::success(jobs());
+    }
+
+    if (name == "movie.project.new")
+    {
+        const juce::String projName = a.getProperty("name", "Untitled Movie").toString().trim();
+        if (projName.isEmpty())
+            return Result::failure("invalid_name", "Project name cannot be empty.");
+
+        juce::String err;
+        if (! creation::assets::ProjectWorkspaceService::createProject(
+                settings, creation::assets::SuiteAppDomain::movie, projName, "0.0.1", "0.0.1", session, err))
+            return Result::failure("project_create_failed", err);
+
+        movie::Sequence seq;
+        seq.projectId = session.getProjectId();
+        seq.name = projName;
+        if (movie::finiteNumber(a["width"]))  seq.width  = (int) a["width"];
+        if (movie::finiteNumber(a["height"])) seq.height = (int) a["height"];
+        if (movie::finiteNumber(a["fpsNum"])) seq.fpsNum = (int) a["fpsNum"];
+        if (movie::finiteNumber(a["fpsDen"])) seq.fpsDen = (int) a["fpsDen"];
+        document.replace(std::move(seq), false);
+        engineer.setProjectId(session.getProjectId());
+        cards->refresh();
+        execute("movie.project.save", movie::object({}));
+        return Result::success(state(), { "Created project " + projName });
+    }
+
+    if (name == "movie.project.open")
+    {
+        const juce::String projectId = a["projectId"].toString().trim();
+        if (projectId.isEmpty())
+            return Result::failure("missing_project_id", "projectId is required.");
+
+        juce::String err;
+        if (! creation::assets::ProjectWorkspaceService::openProject(settings, projectId, session, err))
+            return Result::failure("project_open_failed", err);
+
+        movie::Sequence loaded;
+        loaded.projectId = session.getProjectId();
+        loaded.name = session.getManifest().projectName.isNotEmpty() ? session.getManifest().projectName : "Movie Project";
+        juce::MemoryBlock block;
+        if (session.readEntry(kMovieStateEntry, block))
+        {
+            juce::String parseErr;
+            if (! movie::Sequence::fromJson(juce::JSON::parse(block.toString()), loaded, parseErr))
+                return Result::failure("corrupt_sequence", parseErr);
+            loaded.projectId = session.getProjectId();
+        }
+        document.replace(std::move(loaded), true);
+        engineer.setProjectId(session.getProjectId());
+        cards->refresh();
+        return Result::success(state(), { "Opened project " + document.sequence.name });
+    }
+
+    if (name == "movie.project.save")
+    {
+        if (! session.isValid())
+            return Result::failure("no_project", "No active VFS project session.");
+
+        const auto jsonText = juce::JSON::toString(document.sequence.toJson());
+        juce::MemoryBlock block(jsonText.toRawUTF8(), jsonText.getNumBytesAsUTF8());
+        if (! session.writeEntry(kMovieStateEntry, block))
+            return Result::failure("vfs_write_failed", session.getLastWriteError());
+
+        juce::String commitErr;
+        if (! session.commit(commitErr))
+            return Result::failure("vfs_commit_failed", commitErr);
+
+        document.dirty = false;
+        lastStatus = "Saved project to VFS.";
+        refresh();
+        return Result::success(state(), { "Saved project " + document.sequence.name });
+    }
+
+    if (name == "movie.media.import")
+    {
+        if (! session.isValid())
+            return Result::failure("no_project", "Create or open a project before importing media.");
+
+        const juce::File file(a["path"].toString());
+        if (! file.existsAsFile())
+            return Result::failure("file_not_found", "Media file does not exist: " + file.getFullPathName());
+
+        const juce::String projId = session.getProjectId();
+        const juce::String mediaId = juce::Uuid().toString();
+        const juce::String safeName = file.getFileName().replaceCharacter('\\', '_').replaceCharacter('/', '_');
+        const juce::String logicalPath = "Media/" + mediaId + "_" + safeName;
+
+        return startJob("import",
+            [file, projId, mediaId, logicalPath](Job& j) -> juce::var
+            {
+                // 1. Probe external file first
+                auto fileStream = file.createInputStream();
+                if (! fileStream)
+                    throw std::runtime_error("Cannot read source file: " + file.getFullPathName().toStdString());
+                movie::MediaReader fileProbe(std::move(fileStream), file.getFileName(), movie::MediaReader::Kind::probe, &j.cancel);
+
+                // 2. Upload directly into VFS container without compression overhead for media streams
+                creation::suite::SuiteSettingsStore store;
+                juce::String err;
+                creation::assets::ProjectSession workerSession;
+                if (! creation::assets::ProjectSession::open(store.load(err), projId, workerSession, err))
+                    throw std::runtime_error(("Could not open VFS project for import: " + err).toStdString());
+
+                if (! workerSession.writeEntryFromFile(logicalPath, file, err, 0,
+                        [&j](double p) { j.progress = p * 0.85; return ! j.cancel.load(); }))
+                {
+                    throw std::runtime_error((err.isNotEmpty() ? err : "VFS media upload failed.").toStdString());
+                }
+
+                // 3. Verify VFS stream demuxing directly through custom AVIO
+                auto vfsStream = creation::assets::openVfsEntryStream(projId, logicalPath);
+                movie::MediaReader vfsProbe(std::move(vfsStream), file.getFileName(), movie::MediaReader::Kind::probe, &j.cancel);
+                j.progress = 1.0;
+
+                return movie::object({
+                    { "id", mediaId },
+                    { "versionId", mediaId },
+                    { "name", file.getFileName() },
+                    { "path", logicalPath },
+                    { "info", vfsProbe.info().toJson() }
+                });
+            },
+            [this](const juce::var& res)
+            {
+                movie::Media m;
+                m.id = res["id"].toString();
+                m.versionId = res["versionId"].toString();
+                m.name = res["name"].toString();
+                m.path = res["path"].toString();
+                m.info = movie::MediaInfo::fromJson(res["info"]);
+
+                auto next = document.sequence;
+                next.media.push_back(m);
+                document.replace(std::move(next), false);
+                selectMedia(m.id);
+            });
+    }
+
+    if (name == "movie.timeline.place" || name == "movie.timeline.title"
+        || name == "movie.timeline.split" || name == "movie.timeline.trim"
+        || name == "movie.timeline.move" || name == "movie.timeline.remove"
+        || name == "movie.timeline.levels")
+    {
+        const juce::String shortCmd = name.fromLastOccurrenceOf(".", false, false);
+        juce::var args = a;
+        if (shortCmd != "place" && shortCmd != "title" && args["clipId"].toString().isEmpty() && selectedClip.isNotEmpty())
+        {
+            auto* cloned = new juce::DynamicObject();
+            if (auto* existing = a.getDynamicObject())
+                cloned->getProperties() = existing->getProperties();
+            cloned->setProperty("clipId", selectedClip);
+            if (shortCmd == "split" && ! movie::finiteNumber(cloned->getProperty("time")))
+                cloned->setProperty("time", playback.position());
+            args = juce::var(cloned);
+        }
+
+        juce::String err;
+        if (! document.edit(shortCmd, args, err))
+            return Result::failure("edit_rejected", err);
+
+        if (! document.sequence.clips.empty() && document.sequence.findClip(selectedClip) < 0)
+            selectedClip = document.sequence.clips.back().id;
+        changed();
+        return Result::success(state(), { "Applied timeline " + shortCmd });
+    }
+
+    if (name == "movie.timeline.undo")
+    {
+        if (! document.undo.canUndo())
+            return Result::failure("nothing_to_undo", "There is no timeline action to undo.");
+        document.undo.undo();
+        changed();
+        return Result::success(state(), { "Undid timeline edit" });
+    }
+
+    if (name == "movie.timeline.redo")
+    {
+        if (! document.undo.canRedo())
+            return Result::failure("nothing_to_redo", "There is no timeline action to redo.");
+        document.undo.redo();
+        changed();
+        return Result::success(state(), { "Redid timeline edit" });
+    }
+
+    if (name == "movie.transport.play")
+    {
+        playback.play(true);
+        refresh();
+        return Result::success(state(), { "Started playback" });
+    }
+    if (name == "movie.transport.pause")
+    {
+        playback.play(false);
+        refresh();
+        return Result::success(state(), { "Paused playback" });
+    }
+    if (name == "movie.transport.stop")
+    {
+        playback.play(false);
+        playback.seek(0.0);
+        refresh();
+        return Result::success(state(), { "Stopped playback" });
+    }
+    if (name == "movie.transport.seek")
+    {
+        if (! movie::finiteNumber(a["time"]))
+            return Result::failure("invalid_time", "A finite 'time' in seconds is required.");
+        playback.seek((double) a["time"]);
+        refresh();
+        return Result::success(state(), { "Seeked playhead" });
+    }
+    if (name == "movie.transport.step")
+    {
+        const int frames = (int) a.getProperty("frames", 1);
+        playback.play(false);
+        playback.seek(document.sequence.snap(playback.position() + frames * document.sequence.frameSeconds()));
+        refresh();
+        return Result::success(state(), { "Stepped playhead" });
+    }
+
+    if (name == "movie.select")
+    {
+        if (a["clipId"].toString().isNotEmpty())
+            selectClip(a["clipId"].toString());
+        if (a["assetId"].toString().isNotEmpty())
+            selectMedia(a["assetId"].toString());
+        return Result::success(state());
+    }
+
+    if (name == "movie.export")
+    {
+        if (document.sequence.duration() <= 0.0)
+            return Result::failure("empty_timeline", "Cannot export an empty timeline.");
+
+        movie::ExportOptions opts;
+        opts.destination = juce::File(a["path"].toString());
+        opts.preset = a.getProperty("preset", "mp4").toString();
+        opts.width = (int) a.getProperty("width", 0);
+        opts.height = (int) a.getProperty("height", 0);
+        opts.overwrite = (bool) a.getProperty("overwrite", false);
+
+        if (opts.destination.getFullPathName().trim().isEmpty())
+            return Result::failure("invalid_destination", "Export destination path is required.");
+        if (! opts.destination.getParentDirectory().isDirectory())
+            return Result::failure("missing_folder", "Export destination directory does not exist.");
+        if (opts.destination.exists() && ! opts.overwrite)
+            return Result::failure("destination_exists", "Destination file already exists and overwrite is false.");
+
+        const auto seqSnapshot = document.sequence;
+        return startJob("export",
+            [seqSnapshot, opts](Job& j) -> juce::var
+            {
+                movie::exportSequence(seqSnapshot, opts, j.cancel, [&j](double p) { j.progress = p; });
+                auto verifyStream = opts.destination.createInputStream();
+                if (! verifyStream)
+                    throw std::runtime_error("Exported file could not be reopened for verification.");
+                movie::MediaReader verifyProbe(std::move(verifyStream), opts.destination.getFileName(),
+                                               movie::MediaReader::Kind::probe, &j.cancel);
+                return movie::object({
+                    { "path", opts.destination.getFullPathName() },
+                    { "preset", opts.preset },
+                    { "bytes", (juce::int64) opts.destination.getSize() },
+                    { "info", verifyProbe.info().toJson() }
+                });
+            });
+    }
+
+    return Result::failure("unknown_command", "Unknown Movie command: " + name);
+}
+
+void MainComponent::registerCommands()
+{
+    using creation::agent::Effect;
+    using creation::agent::ToolDefinition;
+
+    engineer.addStateDomain({
+        "movie.sequence",
+        [this] { return document.sequence.toJson(); },
+        [this](const juce::var& v) { document.restore(v); }
+    });
+
+    engineer.appContext = [this](const juce::String&)
+    {
+        return "Project: " + document.sequence.name
+             + " | Media: " + juce::String(document.sequence.media.size())
+             + " | Clips: " + juce::String(document.sequence.clips.size())
+             + " | Duration: " + juce::String(document.sequence.duration(), 2) + "s"
+             + " | Playhead: " + juce::String(playback.position(), 2) + "s"
+             + " | Job: " + (job ? (job->type + ":" + job->status) : "idle");
+    };
+
+    engineer.approver = [this](const creation::agent::ApprovalRequest& req, std::function<void(bool)> decide)
+    {
+        juce::AlertWindow::showOkCancelBox(
+            juce::MessageBoxIconType::QuestionIcon,
+            "Confirm " + req.toolTitle,
+            req.description + "\n\nArguments:\n" + req.arguments,
+            "Allow", "Cancel", this,
+            juce::ModalCallbackFunction::create([decide = std::move(decide)](int r) { decide(r == 1); }));
+    };
+
+    auto reg = [this](const juce::String& name, const juce::String& titleText, const juce::String& desc,
+                      Effect eff, juce::var schema)
+    {
+        juce::String err;
+        auto handler = [this, name](const juce::var& args, std::function<void(Result)> done)
+        {
+            done(execute(name, args));
         };
+        engineer.addTool({ name, titleText, desc, schema, eff }, handler, err);
+        api.addAppCommand(name, desc, schema, handler);
+    };
 
-        menu.addItem(menuIdPanelPreview, "Program Monitor", true, isOpen(panelIdPreview));
-        menu.addItem(menuIdPanelTimeline, "Timeline", true, isOpen(panelIdTimeline));
-        menu.addItem(menuIdPanelLibrary, "Media Library", true, isOpen(panelIdLibrary));
-        menu.addItem(menuIdPanelInspector, "Inspector", true, isOpen(panelIdInspector));
-        menu.addSeparator();
-        menu.addItem(menuIdResetLayout, "Reset Dock Layout");
-        return menu;
-    }
+    reg("movie.state.get", "Get Movie State", "Returns sequence, transport, selection, and background job state.",
+        Effect::read, schemaObj({}));
+    reg("movie.jobs.get", "Get Background Jobs", "Returns the current or most recent background media job status.",
+        Effect::read, schemaObj({}));
+    reg("movie.job.cancel", "Cancel Background Job", "Signals cancellation to the active import or export job.",
+        Effect::write, schemaObj({}));
 
-    menu.addItem(1, "EULA");
-    return menu;
+    reg("movie.project.new", "New Movie Project", "Creates a new VFS-backed Movie project.",
+        Effect::destructive, schemaObj({
+            { "name", movie::object({ { "type", "string" } }) },
+            { "width", movie::object({ { "type", "integer" } }) },
+            { "height", movie::object({ { "type", "integer" } }) },
+            { "fpsNum", movie::object({ { "type", "integer" } }) },
+            { "fpsDen", movie::object({ { "type", "integer" } }) }
+        }));
+    reg("movie.project.open", "Open Movie Project", "Opens an existing VFS Movie project by projectId.",
+        Effect::destructive, schemaObj({ { "projectId", movie::object({ { "type", "string" } }) } }, { "projectId" }));
+    reg("movie.project.save", "Save Movie Project", "Persists the sequence to Project/movie-state.json in the VFS.",
+        Effect::external, schemaObj({}));
+
+    reg("movie.media.import", "Import Media File",
+        "Schedules a background job to probe and import an external media file into the project VFS.",
+        Effect::external, schemaObj({ { "path", movie::object({ { "type", "string" } }) } }, { "path" }));
+
+    reg("movie.timeline.place", "Place Media on Timeline", "Places an imported media asset onto the sequence timeline.",
+        Effect::write, schemaObj({
+            { "assetId", movie::object({ { "type", "string" } }) },
+            { "start", movie::object({ { "type", "number" } }) },
+            { "duration", movie::object({ { "type", "number" } }) },
+            { "sourceIn", movie::object({ { "type", "number" } }) },
+            { "track", movie::object({ { "type", "integer" } }) }
+        }, { "assetId" }));
+
+    reg("movie.timeline.title", "Add Title Clip", "Adds a title overlay clip onto the timeline.",
+        Effect::write, schemaObj({
+            { "text", movie::object({ { "type", "string" } }) },
+            { "start", movie::object({ { "type", "number" } }) },
+            { "duration", movie::object({ { "type", "number" } }) },
+            { "track", movie::object({ { "type", "integer" } }) }
+        }, { "text" }));
+
+    reg("movie.timeline.split", "Split Timeline Clip",
+        "Splits a timeline clip at the specified sequence time while preserving exact source media offsets.",
+        Effect::write, schemaObj({
+            { "clipId", movie::object({ { "type", "string" } }) },
+            { "time", movie::object({ { "type", "number" } }) }
+        }, { "clipId", "time" }));
+
+    reg("movie.timeline.trim", "Trim Timeline Clip", "Updates a clip's sourceIn and duration.",
+        Effect::write, schemaObj({
+            { "clipId", movie::object({ { "type", "string" } }) },
+            { "sourceIn", movie::object({ { "type", "number" } }) },
+            { "duration", movie::object({ { "type", "number" } }) }
+        }, { "clipId" }));
+
+    reg("movie.timeline.move", "Move Timeline Clip", "Moves a clip to a new start time and/or track.",
+        Effect::write, schemaObj({
+            { "clipId", movie::object({ { "type", "string" } }) },
+            { "start", movie::object({ { "type", "number" } }) },
+            { "track", movie::object({ { "type", "integer" } }) }
+        }, { "clipId", "start" }));
+
+    reg("movie.timeline.remove", "Remove Timeline Clip", "Removes a clip (with optional ripple delete).",
+        Effect::destructive, schemaObj({
+            { "clipId", movie::object({ { "type", "string" } }) },
+            { "ripple", movie::object({ { "type", "boolean" } }) }
+        }, { "clipId" }));
+
+    reg("movie.timeline.levels", "Set Clip Gain and Opacity", "Adjusts audio gain (0..4) and video opacity (0..1).",
+        Effect::write, schemaObj({
+            { "clipId", movie::object({ { "type", "string" } }) },
+            { "gain", movie::object({ { "type", "number" } }) },
+            { "opacity", movie::object({ { "type", "number" } }) }
+        }, { "clipId" }));
+
+    reg("movie.timeline.undo", "Undo Timeline Edit", "Undoes the last timeline edit.", Effect::write, schemaObj({}));
+    reg("movie.timeline.redo", "Redo Timeline Edit", "Redoes the last undone timeline edit.", Effect::write, schemaObj({}));
+
+    reg("movie.transport.play", "Play Transport", "Starts synchronized sequence playback.", Effect::write, schemaObj({}));
+    reg("movie.transport.pause", "Pause Transport", "Pauses sequence playback.", Effect::write, schemaObj({}));
+    reg("movie.transport.stop", "Stop Transport", "Stops playback and rewinds to 0.", Effect::write, schemaObj({}));
+    reg("movie.transport.seek", "Seek Transport", "Moves the playhead to a position in seconds.",
+        Effect::write, schemaObj({ { "time", movie::object({ { "type", "number" } }) } }, { "time" }));
+    reg("movie.transport.step", "Step Frames", "Steps the playhead by a number of frames.",
+        Effect::write, schemaObj({ { "frames", movie::object({ { "type", "integer" } }) } }));
+
+    reg("movie.export", "Export Sequence",
+        "Schedules a background job to render and encode the sequence to mp4, prores (.mov), or ffv1 (.mkv).",
+        Effect::external, schemaObj({
+            { "path", movie::object({ { "type", "string" } }) },
+            { "preset", movie::object({ { "type", "string" } }) },
+            { "width", movie::object({ { "type", "integer" } }) },
+            { "height", movie::object({ { "type", "integer" } }) },
+            { "overwrite", movie::object({ { "type", "boolean" } }) }
+        }, { "path" }));
+
+    api.addAppEndpoint("state", "Full Movie state including sequence, transport, and active job", [this] { return state(); });
+    api.addAppEndpoint("jobs", "Background import/export job status", [this] { return jobs(); });
+    api.addAppEndpoint("sequence", "Current Movie sequence JSON", [this] { return document.sequence.toJson(); });
 }
 
-void MainComponent::menuItemSelected(int menuItemID, int topLevelMenuIndex)
+void MainComponent::runUi(const juce::String& name, const juce::var& a)
 {
-    if (topLevelMenuIndex == 0)
-    {
-        switch (menuItemID)
-        {
-            case menuIdPanelPreview:   toggleDockPanel(panelIdPreview, CreationDock::DockTargetZone::CenterTab); break;
-            case menuIdPanelTimeline:  toggleDockPanel(panelIdTimeline, CreationDock::DockTargetZone::Bottom); break;
-            case menuIdPanelLibrary:   toggleDockPanel(panelIdLibrary, CreationDock::DockTargetZone::Left); break;
-            case menuIdPanelInspector: toggleDockPanel(panelIdInspector, CreationDock::DockTargetZone::Right); break;
-            case menuIdResetLayout:    if (dockManager != nullptr) dockManager->resetLayout(); break;
-            default: break;
-        }
-
-        menuItemsChanged();
-        return;
-    }
-
-    if (menuItemID == 1)
-        showEulaWindow();
+    const auto res = execute(name, a);
+    if (! res.ok)
+        warn(res.message);
+    else if (! res.changes.isEmpty())
+        lastStatus = res.changes[0];
+    refresh();
 }
 
-void MainComponent::initialiseDockingWorkspace()
+void MainComponent::changed()
 {
-    if (dockManager == nullptr)
-        return;
-
-    dockManager->registerPanel(panelIdLibrary, "Media Library",
-        std::make_unique<NonOwningPanelHost>(*assetLibraryPanel), CreationDock::DockTargetZone::Left);
-    dockManager->registerPanel(panelIdPreview, "Program Monitor",
-        std::make_unique<NonOwningPanelHost>(*previewSurface), CreationDock::DockTargetZone::CenterTab);
-    dockManager->registerPanel(panelIdInspector, "Inspector",
-        std::make_unique<NonOwningPanelHost>(*inspectorPanel), CreationDock::DockTargetZone::Right);
-    dockManager->registerPanel(panelIdTimeline, "Timeline",
-        std::make_unique<NonOwningPanelHost>(*timelineCanvas), CreationDock::DockTargetZone::Bottom);
+    playback.setSequence(document.sequence);
+    lastPreviewTime = -1.0;
+    playback.requestPreview(playback.position());
+    if (inspector)
+        inspector->syncFromSelection();
+    refresh();
 }
 
-void MainComponent::toggleDockPanel(const juce::String& panelId, CreationDock::DockTargetZone fallbackZone)
+void MainComponent::refresh()
 {
-    if (dockManager == nullptr)
-        return;
+    const auto& seq = document.sequence;
+    header.setProjectLabel("Project: " + seq.name + (document.dirty ? " *" : ""));
+    header.setPlaybackVisualState(playback.playing(), false);
+    timecode.setText(formatTimecode(playback.position(), seq.fpsNum, seq.fpsDen)
+                     + " / " + formatTimecode(seq.duration(), seq.fpsNum, seq.fpsDen),
+                     juce::dontSendNotification);
 
-    if (dockManager->isPanelOpen(panelId))
-        dockManager->closePanel(panelId);
-    else
-        dockManager->showPanel(panelId, fallbackZone);
+    juce::String statusLine = lastStatus;
+    if (job && job->status == "running")
+        statusLine = "Running " + job->type + " (" + juce::String((int) std::lround(job->progress.load() * 100.0)) + "%)";
+    else if (playback.error().isNotEmpty())
+        statusLine = "Playback error: " + playback.error();
 
-    menuItemsChanged();
+    status.setText(statusLine, juce::dontSendNotification);
+    header.setStatusText(statusLine);
+    cancelJob.setEnabled(job && job->status == "running");
+
+    if (library)       library->repaint();
+    if (monitor)       monitor->repaint();
+    if (sourceMonitor) sourceMonitor->repaint();
+    if (timeline)      timeline->repaint();
+    if (inspector)     inspector->repaint();
 }
 
-void MainComponent::importMediaFiles()
+void MainComponent::selectClip(const juce::String& id)
 {
-    importChooser = std::make_unique<juce::FileChooser>("Import media into Creation Movie");
-    importChooser->launchAsync(juce::FileBrowserComponent::openMode
-                                   | juce::FileBrowserComponent::canSelectFiles
-                                   | juce::FileBrowserComponent::canSelectMultipleItems,
-                               [this](const juce::FileChooser& chooser)
-                               {
-                                   for (const auto& file : chooser.getResults())
-                                       ingestMediaFile(file);
-
-                                   if (! assets.empty())
-                                       selectAsset(static_cast<int>(assets.size()) - 1);
-
-                                   assetLibraryPanel->repaint();
-                                   inspectorPanel->repaint();
-                                   previewSurface->repaint();
-                                   repaint();
-                                   importChooser.reset();
-                               });
+    selectedClip = id;
+    if (inspector)
+        inspector->syncFromSelection();
+    if (timeline)
+        timeline->repaint();
 }
 
-void MainComponent::ingestMediaFile(const juce::File& file)
+void MainComponent::selectMedia(const juce::String& id)
 {
-    AssetRecord asset;
-    asset.id = juce::Uuid().toString();
-    asset.name = file.getFileName();
-    asset.sourcePath = file.getFullPathName();
-
-    const auto extension = file.getFileExtension().toLowerCase();
-
-    if (isImageExtension(extension))
+    selectedMedia = id;
+    if (const auto* m = document.sequence.findMedia(id))
     {
-        asset.kind = AssetKind::image;
-        asset.previewImage = juce::ImageFileFormat::loadFrom(file);
-        asset.width = asset.previewImage.getWidth();
-        asset.height = asset.previewImage.getHeight();
-        asset.metadataLine = "Still  |  " + juce::String(asset.width) + "x" + juce::String(asset.height)
-                             + "  |  " + formatShortDuration(defaultClipDurationForAsset(asset));
-    }
-    else if (isVideoExtension(extension))
-    {
-        asset.kind = AssetKind::video;
-        asset.durationSeconds = 6.0;
-        asset.frameRate = transportState.framesPerSecond;
-        asset.metadataLine = "Video  |  imported clip  |  metadata expansion pending";
-    }
-    else if (auto reader = std::unique_ptr<juce::AudioFormatReader>(audioFormatManager.createReaderFor(file)))
-    {
-        asset.kind = AssetKind::audio;
-        asset.channels = static_cast<int>(reader->numChannels);
-        asset.sampleRate = reader->sampleRate;
-        if (reader->sampleRate > 0.0)
-            asset.durationSeconds = reader->lengthInSamples / reader->sampleRate;
+        movie::Sequence single;
+        single.projectId = document.sequence.projectId;
+        single.name = m->name;
+        single.width = m->info.width > 0 ? m->info.width : 1920;
+        single.height = m->info.height > 0 ? m->info.height : 1080;
+        single.fpsNum = m->info.fpsNum > 0 ? m->info.fpsNum : 30;
+        single.fpsDen = m->info.fpsDen > 0 ? m->info.fpsDen : 1;
+        single.media.push_back(*m);
 
-        asset.metadataLine = "Audio  |  "
-                             + juce::String(asset.channels) + " ch  |  "
-                             + juce::String(static_cast<int>(std::round(asset.sampleRate))) + " Hz  |  "
-                             + formatShortDuration(asset.durationSeconds);
-    }
-    else
-    {
-        return;
-    }
+        movie::Clip c;
+        c.id = "source-preview";
+        c.assetId = m->id;
+        c.assetVersionId = m->versionId;
+        c.displayName = m->name;
+        c.trackIndex = 0;
+        c.kind = m->info.hasVideo ? creation::timeline::ClipKind::video : creation::timeline::ClipKind::audio;
+        c.startSeconds = 0.0;
+        c.durationSeconds = m->info.duration;
+        c.sourceStartSeconds = 0.0;
+        c.sourceDurationSeconds = m->info.duration;
+        single.clips.push_back(c);
 
-    assets.push_back(std::move(asset));
+        sourcePlayback.setSequence(single);
+        sourcePlayback.requestPreview(0.0);
+    }
+    refresh();
 }
 
-void MainComponent::openProject()
+juce::var MainComponent::state() const
 {
-    // Projects are picked from the framework's own catalog, never an OS file browser (there's
-    // no loose .csproj file to browse for anymore -- see docs/architecture/
-    // Suite-Shared-Project-Model.md). A full shared project-browser integration
-    // (SuiteShellController, as Station/Engine use) is its own scope beyond this migration;
-    // this is the minimal correct replacement, matching CreationStation's own project-list
-    // popup menu pattern.
-    juce::String listError;
-    auto availableProjects = creation::assets::ProjectContainerService::listProjects(
-        suiteSettings, creation::assets::SuiteAppDomain::movie, listError);
-
-    if (availableProjects.isEmpty())
-    {
-        juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,
-                                                    "No Projects Found",
-                                                    listError.isNotEmpty() ? listError : "No Creation Movie projects were found.");
-        return;
-    }
-
-    juce::PopupMenu menu;
-    for (int index = 0; index < availableProjects.size(); ++index)
-        menu.addItem(index + 1, availableProjects.getReference(index).manifest.projectName);
-
-    menu.showMenuAsync(juce::PopupMenu::Options(), [this, availableProjects](int result)
-    {
-        if (result < 1 || result > availableProjects.size())
-            return;
-
-        const auto& selected = availableProjects.getReference(result - 1);
-        juce::String errorMessage;
-        if (creation::assets::ProjectWorkspaceService::openProject(suiteSettings, selected.projectId, projectSession, errorMessage))
-        {
-            loadProjectFromSession();
-        }
-        else
-        {
-            juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
-                                                        "Could Not Open Project",
-                                                        errorMessage);
-        }
+    return movie::object({
+        { "projectId", session.isValid() ? session.getProjectId() : juce::String() },
+        { "dirty", document.dirty },
+        { "canUndo", document.undo.canUndo() },
+        { "canRedo", document.undo.canRedo() },
+        { "selectedClip", selectedClip },
+        { "selectedMedia", selectedMedia },
+        { "codecVersion", movie::codecVersion() },
+        { "transport", movie::object({
+            { "playing", playback.playing() },
+            { "position", playback.position() },
+            { "duration", document.sequence.duration() },
+            { "audioReady", playback.audioReady() },
+            { "underruns", (juce::int64) playback.underruns() },
+            { "error", playback.error() }
+        }) },
+        { "job", jobs() },
+        { "sequence", document.sequence.toJson() }
     });
 }
 
-void MainComponent::saveProject()
+juce::var MainComponent::jobs() const
 {
-    if (projectSession.isValid())
-    {
-        saveProjectToSession();
-        return;
-    }
-
-    auto* alertWindow = new juce::AlertWindow("New Movie Project",
-                                              "Name this project:",
-                                              juce::MessageBoxIconType::NoIcon);
-    alertWindow->addTextEditor("projectName", projectName, "Project name:");
-    alertWindow->addButton("Create", 1, juce::KeyPress(juce::KeyPress::returnKey));
-    alertWindow->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
-
-    alertWindow->enterModalState(true,
-                                 juce::ModalCallbackFunction::create([this, alertWindow](int result)
-                                 {
-                                     if (result == 1)
-                                     {
-                                         const auto name = alertWindow->getTextEditorContents("projectName").trim();
-                                         if (name.isNotEmpty())
-                                             createNewProject(name);
-                                     }
-                                 }),
-                                 true /* deleteWhenDismissed */);
+    if (! job)
+        return movie::object({ { "status", "idle" } });
+    return movie::object({
+        { "id", job->id },
+        { "type", job->type },
+        { "status", job->status },
+        { "progress", job->progress.load() },
+        { "error", job->error },
+        { "result", job->result }
+    });
 }
 
-void MainComponent::createNewProject(const juce::String& name)
+void MainComponent::chooseImport()
 {
-    juce::String errorMessage;
-    if (! creation::assets::ProjectWorkspaceService::createProject(suiteSettings,
-                                                                   creation::assets::SuiteAppDomain::movie,
-                                                                   name,
-                                                                   "1.0.0",
-                                                                   "1.0.0",
-                                                                   projectSession,
-                                                                   errorMessage))
-    {
-        juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
-                                                    "Could Not Create Project",
-                                                    errorMessage);
-        return;
-    }
-
-    projectName = name;
-    projectChipLabel.setText("Project: " + projectName, juce::dontSendNotification);
-    saveProjectToSession();
-}
-
-void MainComponent::zoomTimeline(double factor)
-{
-    transportState.visibleLengthSeconds = juce::jlimit(4.0, 240.0, transportState.visibleLengthSeconds * factor);
-    transportState.visibleStartSeconds = juce::jlimit(0.0,
-                                                      juce::jmax(0.0, transportState.projectDurationSeconds - transportState.visibleLengthSeconds),
-                                                      transportState.playheadSeconds - (transportState.visibleLengthSeconds * 0.5));
-    timelineCanvas->repaint();
-    inspectorPanel->repaint();
-    updateStatusText();
-}
-
-void MainComponent::scrollTimeline(double deltaSeconds)
-{
-    transportState.visibleStartSeconds = juce::jlimit(0.0,
-                                                      juce::jmax(0.0, transportState.projectDurationSeconds - transportState.visibleLengthSeconds),
-                                                      transportState.visibleStartSeconds + deltaSeconds);
-    timelineCanvas->repaint();
-    inspectorPanel->repaint();
-    updateStatusText();
-}
-
-void MainComponent::addMarkerAtPlayhead()
-{
-    TimelineMarker marker;
-    marker.title = "M" + juce::String(static_cast<int>(timelineMarkers.size()) + 1);
-    marker.timeSeconds = transportState.playheadSeconds;
-    timelineMarkers.push_back(std::move(marker));
-    std::sort(timelineMarkers.begin(), timelineMarkers.end(), [](const auto& a, const auto& b) { return a.timeSeconds < b.timeSeconds; });
-    timelineCanvas->repaint();
-    inspectorPanel->repaint();
-}
-
-void MainComponent::createRegionFromMarkers()
-{
-    if (timelineMarkers.size() < 2)
-        return;
-
-    const auto& first = timelineMarkers[timelineMarkers.size() - 2];
-    const auto& second = timelineMarkers[timelineMarkers.size() - 1];
-    TimelineRegion region;
-    region.title = "Region " + juce::String(static_cast<int>(timelineRegions.size()) + 1);
-    region.startSeconds = juce::jmin(first.timeSeconds, second.timeSeconds);
-    region.endSeconds = juce::jmax(first.timeSeconds, second.timeSeconds);
-    region.colour = creation_movie::branding::accentColour();
-    timelineRegions.push_back(std::move(region));
-    timelineCanvas->repaint();
-}
-
-void MainComponent::splitSelectedClip()
-{
-    if (selectedClipIndex < 0 || selectedClipIndex >= static_cast<int>(timelineClips.size()))
-        return;
-
-    auto& clip = timelineClips[static_cast<size_t>(selectedClipIndex)];
-    if (transportState.playheadSeconds <= clip.startSeconds + (1.0 / transportState.framesPerSecond)
-        || transportState.playheadSeconds >= clip.startSeconds + clip.durationSeconds - (1.0 / transportState.framesPerSecond))
-        return;
-
-    const auto splitTime = transportState.playheadSeconds;
-    const auto secondDuration = (clip.startSeconds + clip.durationSeconds) - splitTime;
-    clip.durationSeconds = splitTime - clip.startSeconds;
-
-    TimelineClip splitClip = clip;
-    splitClip.startSeconds = splitTime;
-    splitClip.durationSeconds = secondDuration;
-    splitClip.title = clip.title + " B";
-    timelineClips.insert(timelineClips.begin() + selectedClipIndex + 1, splitClip);
-    selectClip(selectedClipIndex + 1);
-}
-
-void MainComponent::updateClipPlacement(int clipIndex, double startSeconds, int laneIndex)
-{
-    if (clipIndex < 0 || clipIndex >= static_cast<int>(timelineClips.size()))
-        return;
-
-    auto& clip = timelineClips[static_cast<size_t>(clipIndex)];
-    clip.startSeconds = juce::jlimit(0.0, juce::jmax(0.0, transportState.projectDurationSeconds - clip.durationSeconds), startSeconds);
-    clip.laneIndex = juce::jlimit(0, 4, laneIndex);
-    selectedClipIndex = clipIndex;
-    transportState.playheadSeconds = clip.startSeconds;
-    timelineCanvas->repaint();
-    inspectorPanel->repaint();
-    previewSurface->repaint();
-    updateStatusText();
-}
-
-void MainComponent::movePlayheadTo(double timeSeconds)
-{
-    transportState.playheadSeconds = juce::jlimit(0.0, transportState.projectDurationSeconds, timeSeconds);
-    previewSurface->repaint();
-    timelineCanvas->repaint();
-    inspectorPanel->repaint();
-    updateStatusText();
-}
-
-void MainComponent::loadProjectFromSession()
-{
-    juce::MemoryBlock stateData;
-    if (! projectSession.readEntry(kMovieStateEntryPath, stateData))
-        return;
-
-    const auto jsonText = juce::String::fromUTF8(static_cast<const char*>(stateData.getData()), static_cast<int>(stateData.getSize()));
-    const auto parsed = juce::JSON::parse(jsonText);
-    if (! parsed.isObject())
-        return;
-
-    const auto* root = parsed.getDynamicObject();
-    if (root == nullptr)
-        return;
-
-    projectName = projectSession.getManifest().projectName;
-
-    transportState.framesPerSecond = static_cast<double>(root->getProperty("framesPerSecond"));
-    transportState.projectDurationSeconds = static_cast<double>(root->getProperty("projectDurationSeconds"));
-    transportState.visibleStartSeconds = static_cast<double>(root->getProperty("visibleStartSeconds"));
-    transportState.visibleLengthSeconds = static_cast<double>(root->getProperty("visibleLengthSeconds"));
-    transportState.playheadSeconds = static_cast<double>(root->getProperty("playheadSeconds"));
-    transportState.isPlaying = false;
-    transportState.scrubMode = false;
-
-    assets.clear();
-    timelineClips.clear();
-    timelineMarkers.clear();
-    timelineRegions.clear();
-
-    if (const auto* assetArray = root->getProperty("assets").getArray())
-    {
-        for (const auto& entry : *assetArray)
+    chooser = std::make_unique<juce::FileChooser>(
+        "Import Media Asset into Project VFS",
+        juce::File(),
+        "*.mp4;*.mov;*.mkv;*.webm;*.avi;*.wav;*.mp3;*.flac;*.ogg;*.aac;*.png;*.jpg;*.jpeg;*.bmp;*.webp");
+    chooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+        [this](const juce::FileChooser& fc)
         {
-            if (const auto* object = entry.getDynamicObject())
-            {
-                AssetRecord asset;
-                asset.id = object->getProperty("id").toString();
-                asset.name = object->getProperty("name").toString();
-                asset.sourcePath = object->getProperty("sourcePath").toString();
-                asset.kind = assetKindFromToken(object->getProperty("kind").toString());
-                asset.metadataLine = object->getProperty("metadataLine").toString();
-                asset.durationSeconds = static_cast<double>(object->getProperty("durationSeconds"));
-                asset.frameRate = static_cast<double>(object->getProperty("frameRate"));
-                asset.sampleRate = static_cast<double>(object->getProperty("sampleRate"));
-                asset.width = static_cast<int>(object->getProperty("width"));
-                asset.height = static_cast<int>(object->getProperty("height"));
-                asset.channels = static_cast<int>(object->getProperty("channels"));
-                tryReloadImagePreview(asset);
-                assets.push_back(std::move(asset));
-            }
-        }
-    }
+            const auto file = fc.getResult();
+            if (file.existsAsFile())
+                runUi("movie.media.import", movie::object({ { "path", file.getFullPathName() } }));
+        });
+}
 
-    if (const auto* clipArray = root->getProperty("clips").getArray())
-    {
-        for (const auto& entry : *clipArray)
+void MainComponent::chooseExport()
+{
+    chooser = std::make_unique<juce::FileChooser>(
+        "Export Movie Sequence",
+        juce::File(),
+        "*.mp4;*.mov;*.mkv");
+    chooser->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles,
+        [this](const juce::FileChooser& fc)
         {
-            if (const auto* object = entry.getDynamicObject())
-            {
-                TimelineClip clip;
-                clip.assetId = object->getProperty("assetId").toString();
-                clip.title = object->getProperty("title").toString();
-                clip.laneIndex = static_cast<int>(object->getProperty("laneIndex"));
-                clip.startSeconds = static_cast<double>(object->getProperty("startSeconds"));
-                clip.durationSeconds = static_cast<double>(object->getProperty("durationSeconds"));
-                clip.colour = juce::Colour::fromString(object->getProperty("colour").toString());
-                timelineClips.push_back(std::move(clip));
-            }
-        }
+            auto file = fc.getResult();
+            if (file == juce::File())
+                return;
+            juce::String preset = "mp4";
+            if (file.hasFileExtension(".mov")) preset = "prores";
+            else if (file.hasFileExtension(".mkv")) preset = "ffv1";
+            else if (! file.hasFileExtension(".mp4")) file = file.withFileExtension(".mp4");
+
+            runUi("movie.export", movie::object({
+                { "path", file.getFullPathName() },
+                { "preset", preset },
+                { "overwrite", true }
+            }));
+        });
+}
+
+void MainComponent::newProjectDialog()
+{
+    auto* w = new juce::AlertWindow("New Movie Project", "Enter a name for the new VFS project:", juce::MessageBoxIconType::NoIcon);
+    w->addTextEditor("name", "Untitled Movie", "Project Name:");
+    w->addButton("Create", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    w->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+    w->enterModalState(true, juce::ModalCallbackFunction::create([this, w](int r)
+    {
+        if (r == 1)
+            runUi("movie.project.new", movie::object({ { "name", w->getTextEditorContents("name") } }));
+        delete w;
+    }), false);
+}
+
+void MainComponent::openProjectMenu()
+{
+    juce::PopupMenu m;
+    m.addItem(1, "New Project...");
+    m.addItem(2, "Save Project", session.isValid());
+    m.addSeparator();
+
+    juce::String err;
+    const auto list = creation::assets::ProjectContainerService::listProjects(settings, err);
+    for (int i = 0; i < list.size(); ++i)
+    {
+        const auto& p = list.getReference(i);
+        m.addItem(100 + i, p.manifest.projectName + " (" + p.projectId.substring(0, 8) + ")",
+                  true, session.isValid() && session.getProjectId() == p.projectId);
     }
 
-    if (const auto* markerArray = root->getProperty("markers").getArray())
-    {
-        for (const auto& entry : *markerArray)
+    m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(header.projectButton),
+        [this, list](int res)
         {
-            if (const auto* object = entry.getDynamicObject())
-            {
-                TimelineMarker marker;
-                marker.title = object->getProperty("title").toString();
-                marker.timeSeconds = static_cast<double>(object->getProperty("timeSeconds"));
-                timelineMarkers.push_back(std::move(marker));
-            }
-        }
-    }
+            if (res == 1) newProjectDialog();
+            else if (res == 2) runUi("movie.project.save");
+            else if (res >= 100 && res - 100 < list.size())
+                runUi("movie.project.open", movie::object({ { "projectId", list[res - 100].projectId } }));
+        });
+}
 
-    if (const auto* regionArray = root->getProperty("regions").getArray())
+void MainComponent::titleDialog()
+{
+    auto* w = new juce::AlertWindow("Add Title Overlay", "Enter title text:", juce::MessageBoxIconType::NoIcon);
+    w->addTextEditor("text", "Title Text", "Text:");
+    w->addTextEditor("duration", "3.0", "Duration (s):");
+    w->addButton("Add", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    w->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+    w->enterModalState(true, juce::ModalCallbackFunction::create([this, w](int r)
     {
-        for (const auto& entry : *regionArray)
+        if (r == 1)
         {
-            if (const auto* object = entry.getDynamicObject())
-            {
-                TimelineRegion region;
-                region.title = object->getProperty("title").toString();
-                region.startSeconds = static_cast<double>(object->getProperty("startSeconds"));
-                region.endSeconds = static_cast<double>(object->getProperty("endSeconds"));
-                region.colour = juce::Colour::fromString(object->getProperty("colour").toString());
-                timelineRegions.push_back(std::move(region));
-            }
+            runUi("movie.timeline.title", movie::object({
+                { "text", w->getTextEditorContents("text") },
+                { "duration", w->getTextEditorContents("duration").getDoubleValue() },
+                { "start", playback.position() }
+            }));
         }
-    }
-
-    selectedAssetIndex = -1;
-    selectedClipIndex = timelineClips.empty() ? -1 : 0;
-    projectChipLabel.setText("Project: " + projectName, juce::dontSendNotification);
-
-    assetLibraryPanel->repaint();
-    timelineCanvas->repaint();
-    inspectorPanel->repaint();
-    previewSurface->repaint();
-    repaint();
+        delete w;
+    }), false);
 }
 
-void MainComponent::saveProjectToSession()
+void MainComponent::showSettings()
 {
-    if (! projectSession.isValid())
-        return;
-
-    juce::DynamicObject::Ptr root = new juce::DynamicObject();
-    root->setProperty("framesPerSecond", transportState.framesPerSecond);
-    root->setProperty("projectDurationSeconds", transportState.projectDurationSeconds);
-    root->setProperty("visibleStartSeconds", transportState.visibleStartSeconds);
-    root->setProperty("visibleLengthSeconds", transportState.visibleLengthSeconds);
-    root->setProperty("playheadSeconds", transportState.playheadSeconds);
-
-    juce::Array<juce::var> assetArray;
-    for (const auto& asset : assets)
+    if (settingsWindow != nullptr)
     {
-        juce::DynamicObject::Ptr object = new juce::DynamicObject();
-        object->setProperty("id", asset.id);
-        object->setProperty("name", asset.name);
-        object->setProperty("sourcePath", asset.sourcePath);
-        object->setProperty("kind", assetKindToken(asset.kind));
-        object->setProperty("metadataLine", asset.metadataLine);
-        object->setProperty("durationSeconds", asset.durationSeconds);
-        object->setProperty("frameRate", asset.frameRate);
-        object->setProperty("sampleRate", asset.sampleRate);
-        object->setProperty("width", asset.width);
-        object->setProperty("height", asset.height);
-        object->setProperty("channels", asset.channels);
-        assetArray.add(juce::var(object.get()));
-    }
-    root->setProperty("assets", juce::var(assetArray));
-
-    juce::Array<juce::var> clipArray;
-    for (const auto& clip : timelineClips)
-    {
-        juce::DynamicObject::Ptr object = new juce::DynamicObject();
-        object->setProperty("assetId", clip.assetId);
-        object->setProperty("title", clip.title);
-        object->setProperty("laneIndex", clip.laneIndex);
-        object->setProperty("startSeconds", clip.startSeconds);
-        object->setProperty("durationSeconds", clip.durationSeconds);
-        object->setProperty("colour", clip.colour.toString());
-        clipArray.add(juce::var(object.get()));
-    }
-    root->setProperty("clips", juce::var(clipArray));
-
-    juce::Array<juce::var> markerArray;
-    for (const auto& marker : timelineMarkers)
-    {
-        juce::DynamicObject::Ptr object = new juce::DynamicObject();
-        object->setProperty("title", marker.title);
-        object->setProperty("timeSeconds", marker.timeSeconds);
-        markerArray.add(juce::var(object.get()));
-    }
-    root->setProperty("markers", juce::var(markerArray));
-
-    juce::Array<juce::var> regionArray;
-    for (const auto& region : timelineRegions)
-    {
-        juce::DynamicObject::Ptr object = new juce::DynamicObject();
-        object->setProperty("title", region.title);
-        object->setProperty("startSeconds", region.startSeconds);
-        object->setProperty("endSeconds", region.endSeconds);
-        object->setProperty("colour", region.colour.toString());
-        regionArray.add(juce::var(object.get()));
-    }
-    root->setProperty("regions", juce::var(regionArray));
-
-    const auto jsonText = juce::JSON::toString(juce::var(root.get()), true);
-    const juce::MemoryBlock stateData(jsonText.toRawUTF8(), jsonText.getNumBytesAsUTF8());
-
-    if (! projectSession.writeEntry(kMovieStateEntryPath, stateData))
-    {
-        juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
-                                                    "Could Not Save Project",
-                                                    "Could not write the project state into the container.");
+        settingsWindow->toFront(true);
         return;
     }
 
-    juce::String errorMessage;
-    if (! projectSession.commit(errorMessage))
+    class ClosableWindow final : public juce::DocumentWindow
     {
-        juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
-                                                    "Could Not Save Project",
-                                                    errorMessage);
-        return;
-    }
+    public:
+        ClosableWindow(const juce::String& t, std::function<void()> onClose)
+            : juce::DocumentWindow(t, juce::Colour(0xff0f172a), juce::DocumentWindow::closeButton),
+              closeFn(std::move(onClose))
+        {
+            setUsingNativeTitleBar(true);
+        }
+        void closeButtonPressed() override { closeFn(); }
+    private:
+        std::function<void()> closeFn;
+    };
 
-    projectChipLabel.setText("Project: " + projectName, juce::dontSendNotification);
+    auto panel = std::make_unique<SuiteSettingsPanel>();
+    panel->setSettings(settings);
+    panel->onApplyRequested = [this](const creation::suite::SuiteSettings& updated)
+    {
+        juce::String err;
+        creation::suite::SuiteSettingsStore store;
+        if (store.save(updated, err))
+            settings = updated;
+    };
+    panel->onReadEulaRequested = [this] { showHelp(); };
+
+    settingsWindow = std::make_unique<ClosableWindow>("Djehuti Suite Settings", [this] { settingsWindow.reset(); });
+    settingsWindow->setContentOwned(panel.release(), true);
+    settingsWindow->centreWithSize(760, 560);
+    settingsWindow->setResizable(true, true);
+    settingsWindow->setVisible(true);
 }
 
-void MainComponent::placeSelectedAssetOnTimeline()
+void MainComponent::showHelp()
 {
-    if (selectedAssetIndex < 0 || selectedAssetIndex >= static_cast<int>(assets.size()))
+    if (helpWindow != nullptr)
+    {
+        helpWindow->toFront(true);
         return;
+    }
 
-    const auto& asset = assets[static_cast<size_t>(selectedAssetIndex)];
+    class ClosableWindow final : public juce::DocumentWindow
+    {
+    public:
+        ClosableWindow(const juce::String& t, std::function<void()> onClose)
+            : juce::DocumentWindow(t, juce::Colour(0xff0f172a), juce::DocumentWindow::closeButton),
+              closeFn(std::move(onClose))
+        {
+            setUsingNativeTitleBar(true);
+        }
+        void closeButtonPressed() override { closeFn(); }
+    private:
+        std::function<void()> closeFn;
+    };
 
-    TimelineClip clip;
-    clip.assetId = asset.id;
-    clip.title = juce::File(asset.name).getFileNameWithoutExtension();
-    clip.laneIndex = laneForAssetKind(asset.kind);
-    clip.startSeconds = transportState.playheadSeconds;
-    clip.durationSeconds = defaultClipDurationForAsset(asset);
-    clip.colour = colourForAssetKind(asset.kind);
+    auto panel = std::make_unique<SuiteEulaPanel>();
 
-    if (asset.kind == AssetKind::audio && timelineClips.size() % 2 == 1)
-        clip.laneIndex = 3;
-
-    timelineClips.push_back(std::move(clip));
-    selectClip(static_cast<int>(timelineClips.size()) - 1);
+    helpWindow = std::make_unique<ClosableWindow>("Djehuti Movie EULA & Licensing", [this] { helpWindow.reset(); });
+    helpWindow->setContentOwned(panel.release(), true);
+    helpWindow->centreWithSize(720, 540);
+    helpWindow->setResizable(true, true);
+    helpWindow->setVisible(true);
 }
 
-void MainComponent::selectAsset(int assetIndex)
+void MainComponent::warn(const juce::String& msg)
 {
-    if (assetIndex < 0 || assetIndex >= static_cast<int>(assets.size()))
-        return;
-
-    selectedAssetIndex = assetIndex;
-    selectedClipIndex = -1;
-    assetLibraryPanel->repaint();
-    inspectorPanel->repaint();
-    previewSurface->repaint();
-    timelineCanvas->repaint();
-}
-
-void MainComponent::selectClip(int clipIndex)
-{
-    if (clipIndex < 0 || clipIndex >= static_cast<int>(timelineClips.size()))
-        return;
-
-    selectedClipIndex = clipIndex;
-    selectedAssetIndex = -1;
-    const auto& clip = timelineClips[static_cast<size_t>(clipIndex)];
-    transportState.playheadSeconds = clip.startSeconds;
-
-    const auto visibleEnd = transportState.visibleStartSeconds + transportState.visibleLengthSeconds;
-    if (clip.startSeconds < transportState.visibleStartSeconds || clip.startSeconds > visibleEnd)
-        transportState.visibleStartSeconds = juce::jlimit(0.0,
-                                                          transportState.projectDurationSeconds - transportState.visibleLengthSeconds,
-                                                          clip.startSeconds - 2.0);
-
-    timelineCanvas->repaint();
-    inspectorPanel->repaint();
-    previewSurface->repaint();
-    assetLibraryPanel->repaint();
-}
-
-void MainComponent::seedDemoContent()
-{
-    assets.clear();
-    timelineClips.clear();
-    timelineMarkers.clear();
-    timelineRegions.clear();
-    projectName = "Untitled Movie";
-
-    AssetRecord video;
-    video.id = juce::Uuid().toString();
-    video.name = "Interview_CamA_4k.mov";
-    video.sourcePath = "Demo source";
-    video.kind = AssetKind::video;
-    video.durationSeconds = 6.4;
-    video.frameRate = 24.0;
-    video.metadataLine = "Video  |  3840x2160  |  24 fps  |  03:42";
-    assets.push_back(std::move(video));
-
-    AssetRecord audio;
-    audio.id = juce::Uuid().toString();
-    audio.name = "Ink3_Master.wav";
-    audio.sourcePath = "Demo source";
-    audio.kind = AssetKind::audio;
-    audio.durationSeconds = 179.0;
-    audio.channels = 2;
-    audio.sampleRate = 48000.0;
-    audio.metadataLine = "Audio  |  Stereo  |  48 kHz  |  02:59";
-    assets.push_back(std::move(audio));
-
-    AssetRecord image;
-    image.id = juce::Uuid().toString();
-    image.name = "City_Skyline_Still.png";
-    image.sourcePath = "Demo source";
-    image.kind = AssetKind::image;
-    image.width = 4096;
-    image.height = 2160;
-    image.metadataLine = "Still  |  4096x2160  |  imported graphic";
-    assets.push_back(std::move(image));
-
-    AssetRecord title;
-    title.id = juce::Uuid().toString();
-    title.name = "LowerThird_01";
-    title.sourcePath = "Demo source";
-    title.kind = AssetKind::image;
-    title.metadataLine = "Still  |  title template  |  suite asset";
-    assets.push_back(std::move(title));
-
-    timelineClips.push_back({ assets[0].id, "Scene A", 0, 9.2, 6.4, colourForAssetKind(AssetKind::video) });
-    timelineClips.push_back({ assets[3].id, "Lower Third", 1, 13.8, 3.8, colourForAssetKind(AssetKind::image) });
-    timelineClips.push_back({ assets[1].id, "Dialogue", 2, 9.2, 6.4, colourForAssetKind(AssetKind::audio) });
-    timelineClips.push_back({ assets[1].id, "Theme Bed", 3, 8.6, 11.1, juce::Colour(0xff2f9f7f) });
-    timelineMarkers.push_back({ "Intro", 9.0 });
-    timelineMarkers.push_back({ "Verse", 17.0 });
-    timelineRegions.push_back({ "Act 1", 8.8, 18.0, juce::Colour(0xff6a9bd8) });
-
-    selectedClipIndex = 0;
-    selectedAssetIndex = -1;
-    projectChipLabel.setText("Project: " + projectName, juce::dontSendNotification);
+    lastStatus = msg;
+    refresh();
 }
 
 void MainComponent::timerCallback()
 {
-    if (transportState.isPlaying)
+    const double pos = playback.position();
+    if (std::abs(pos - lastPreviewTime) > 1e-4)
     {
-        transportState.playheadSeconds += 1.0 / 30.0;
-        if (transportState.playheadSeconds >= transportState.projectDurationSeconds)
-            transportState.playheadSeconds = 0.0;
-
-        const auto visibleEnd = transportState.visibleStartSeconds + transportState.visibleLengthSeconds;
-        if (transportState.playheadSeconds > visibleEnd - 2.0)
-            transportState.visibleStartSeconds = juce::jlimit(0.0,
-                                                              transportState.projectDurationSeconds - transportState.visibleLengthSeconds,
-                                                              transportState.playheadSeconds - (transportState.visibleLengthSeconds * 0.5));
+        lastPreviewTime = pos;
+        const int w = monitor ? std::max(320, monitor->getWidth() * 2) : 960;
+        const int h = monitor ? std::max(180, monitor->getHeight() * 2) : 540;
+        playback.requestPreview(pos, w, h);
     }
+    if (sourcePlayback.playing())
+        sourcePlayback.requestPreview(sourcePlayback.position());
 
-    updateStatusText();
-    previewSurface->repaint();
-    timelineCanvas->repaint();
-
-    if (previewWindow != nullptr)
-        previewWindow->repaint();
-}
-
-void MainComponent::updateTransportButtons()
-{
-    playButton.setButtonText("play");
-    playButton.setToggleState(transportState.isPlaying, juce::dontSendNotification);
-    scrubButton.setToggleState(transportState.scrubMode, juce::dontSendNotification);
-    recordButton.setToggleState(isRecording, juce::dontSendNotification);
-    placeButton.setEnabled(selectedAssetIndex >= 0);
-    splitButton.setEnabled(selectedClipIndex >= 0);
-    regionButton.setEnabled(timelineMarkers.size() >= 2);
-}
-
-void MainComponent::updateStatusText()
-{
-    const auto status = transportState.scrubMode ? "Scrub ready" : (transportState.isPlaying ? "Rolling timeline" : "Idle");
-    statusLabel.setText(juce::String(status) + "  |  "
-                            + formatTimecode(transportState.playheadSeconds, transportState.framesPerSecond)
-                            + "  |  assets: " + juce::String(static_cast<int>(assets.size()))
-                            + "  |  clips: " + juce::String(static_cast<int>(timelineClips.size())),
-                        juce::dontSendNotification);
-    updateTransportButtons();
-}
-
-void MainComponent::showEulaWindow()
-{
-    if (eulaWindow != nullptr)
+    if (document.dirty && session.isValid() && (++autosaveTicks >= 300))
     {
-        eulaWindow->toFront(true);
-        return;
+        autosaveTicks = 0;
+        execute("movie.project.save", movie::object({}));
     }
-
-    auto window = std::make_unique<ManagedDocumentWindow>("Djehuti Movie EULA",
-                                                          creation_movie::branding::backgroundColour(),
-                                                          juce::DocumentWindow::allButtons,
-                                                          [this] { closeEulaWindow(); });
-    window->setUsingNativeTitleBar(true);
-    window->setResizable(true, true);
-    window->setContentOwned(new EulaPanel(creation_movie::legal::getEulaText()), true);
-    window->centreWithSize(820, 640);
-    window->setVisible(true);
-    eulaWindow = std::move(window);
+    refresh();
 }
 
-void MainComponent::closeEulaWindow()
+juce::StringArray MainComponent::getMenuBarNames()
 {
-    eulaWindow.reset();
+    return { "File", "Edit", "Timeline", "View", "Help" };
 }
 
-void MainComponent::showPreviewWindow()
+juce::PopupMenu MainComponent::getMenuForIndex(int, const juce::String& menuName)
 {
-    if (previewWindow != nullptr)
+    juce::PopupMenu m;
+    if (menuName == "File")
     {
-        previewWindow->toFront(true);
-        return;
+        m.addItem(1, "New Project...");
+        m.addItem(2, "Open Project...");
+        m.addItem(3, "Save Project", session.isValid());
+        m.addSeparator();
+        m.addItem(4, "Import Media...", session.isValid());
+        m.addItem(5, "Export Sequence...", document.sequence.duration() > 0.0);
+        m.addSeparator();
+        m.addItem(6, "Suite Settings...");
+        m.addSeparator();
+        m.addItem(7, "Quit");
     }
-
-    auto window = std::make_unique<ManagedDocumentWindow>("Djehuti Movie Preview",
-                                                          creation_movie::branding::backgroundColour(),
-                                                          juce::DocumentWindow::allButtons,
-                                                          [this] { closePreviewWindow(); });
-    window->setUsingNativeTitleBar(true);
-    window->setResizable(true, true);
-    window->setContentOwned(new PreviewSurface(transportState, assets, timelineClips, selectedAssetIndex, selectedClipIndex), true);
-    window->centreWithSize(960, 620);
-    window->setVisible(true);
-    previewWindow = std::move(window);
+    else if (menuName == "Edit")
+    {
+        m.addItem(10, "Undo", document.undo.canUndo());
+        m.addItem(11, "Redo", document.undo.canRedo());
+    }
+    else if (menuName == "Timeline")
+    {
+        m.addItem(20, "Place Selected Media at Playhead", selectedMedia.isNotEmpty());
+        m.addItem(21, "Add Title Overlay...");
+        m.addItem(22, "Split Selected Clip at Playhead", selectedClip.isNotEmpty());
+        m.addItem(23, "Delete Selected Clip", selectedClip.isNotEmpty());
+        m.addItem(24, "Ripple Delete Selected Clip", selectedClip.isNotEmpty());
+    }
+    else if (menuName == "View")
+    {
+        m.addItem(30, "Media Library");
+        m.addItem(31, "Source Monitor");
+        m.addItem(32, "Program Monitor");
+        m.addItem(33, "Timeline");
+        m.addItem(34, "Inspector");
+        m.addItem(35, "Virtual Engineer");
+        m.addItem(36, "Cards");
+        m.addSeparator();
+        m.addItem(37, "Reset Workspace Layout");
+    }
+    else if (menuName == "Help")
+    {
+        m.addItem(40, "EULA & FFmpeg Licensing...");
+    }
+    return m;
 }
 
-void MainComponent::closePreviewWindow()
+void MainComponent::menuItemSelected(int id, int)
 {
-    previewWindow.reset();
-}
-
-void MainComponent::togglePlayback()
-{
-    transportState.isPlaying = ! transportState.isPlaying;
-    updateTransportButtons();
-    updateStatusText();
-}
-
-void MainComponent::stopPlayback()
-{
-    transportState.isPlaying = false;
-
-    if (selectedClipIndex >= 0 && selectedClipIndex < static_cast<int>(timelineClips.size()))
-        transportState.playheadSeconds = timelineClips[static_cast<size_t>(selectedClipIndex)].startSeconds;
-    else
-        transportState.playheadSeconds = transportState.visibleStartSeconds;
-
-    updateTransportButtons();
-    updateStatusText();
-    previewSurface->repaint();
-    timelineCanvas->repaint();
-}
-
-void MainComponent::toggleRecording()
-{
-    isRecording = ! isRecording;
-    if (isRecording)
-        transportState.isPlaying = false;
-
-    updateTransportButtons();
-    updateStatusText();
-    repaint();
-}
-
-void MainComponent::toggleScrubMode()
-{
-    transportState.scrubMode = ! transportState.scrubMode;
-    updateTransportButtons();
-    updateStatusText();
-    previewSurface->repaint();
-}
-
-void MainComponent::stepPlayheadByFrames(int frameDelta)
-{
-    const auto secondsPerFrame = 1.0 / juce::jmax(1.0, transportState.framesPerSecond);
-    transportState.playheadSeconds = juce::jlimit(0.0,
-                                                  transportState.projectDurationSeconds,
-                                                  transportState.playheadSeconds + (secondsPerFrame * frameDelta));
-
-    if (transportState.playheadSeconds < transportState.visibleStartSeconds)
-        transportState.visibleStartSeconds = juce::jmax(0.0, transportState.playheadSeconds - secondsPerFrame);
-
-    const auto visibleEnd = transportState.visibleStartSeconds + transportState.visibleLengthSeconds;
-    if (transportState.playheadSeconds > visibleEnd)
-        transportState.visibleStartSeconds = juce::jlimit(0.0,
-                                                          transportState.projectDurationSeconds - transportState.visibleLengthSeconds,
-                                                          transportState.playheadSeconds - transportState.visibleLengthSeconds + (secondsPerFrame * 2.0));
-
-    updateStatusText();
-    previewSurface->repaint();
-    timelineCanvas->repaint();
-    inspectorPanel->repaint();
+    switch (id)
+    {
+        case 1: newProjectDialog(); break;
+        case 2: openProjectMenu(); break;
+        case 3: runUi("movie.project.save"); break;
+        case 4: chooseImport(); break;
+        case 5: chooseExport(); break;
+        case 6: showSettings(); break;
+        case 7: requestQuit(); break;
+        case 10: runUi("movie.timeline.undo"); break;
+        case 11: runUi("movie.timeline.redo"); break;
+        case 20: runUi("movie.timeline.place", movie::object({ { "assetId", selectedMedia }, { "start", playback.position() } })); break;
+        case 21: titleDialog(); break;
+        case 22: runUi("movie.timeline.split", movie::object({ { "clipId", selectedClip }, { "time", playback.position() } })); break;
+        case 23: runUi("movie.timeline.remove", movie::object({ { "clipId", selectedClip }, { "ripple", false } })); break;
+        case 24: runUi("movie.timeline.remove", movie::object({ { "clipId", selectedClip }, { "ripple", true } })); break;
+        case 30: if (dock) dock->activatePanel("library"); break;
+        case 31: if (dock) dock->activatePanel("source"); break;
+        case 32: if (dock) dock->activatePanel("program"); break;
+        case 33: if (dock) dock->activatePanel("timeline"); break;
+        case 34: if (dock) dock->activatePanel("inspector"); break;
+        case 35: if (dock) dock->activatePanel("engineer"); break;
+        case 36: if (dock) dock->activatePanel("cards"); break;
+        case 37: if (dock) dock->resetLayout(); break;
+        case 40: showHelp(); break;
+        default: break;
+    }
 }
