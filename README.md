@@ -1,51 +1,31 @@
-# Creation Movie
+# Djehuti Movie
 
-Creation Movie is the video-editing sibling in the Creation suite: a JUCE-based editor for timeline cutting, preview, render orchestration, titles, and future language-driven motion/media workflows.
+Djehuti Movie is the Creation Suite's Windows video editor. It uses JUCE for the desktop workspace, FFmpeg for media decoding and encoding, and the suite VFS for project and imported-media storage.
 
-Sibling apps:
+The current foundation provides source/program preview, timeline placement and trimming, splitting and ripple deletion, title overlays, gain and opacity, undo/redo, and background export. The shared Virtual Engineer and authenticated localhost API invoke the same commands as the application UI.
 
-- [Creation Station](https://github.com/wwestlake/CreationStation) — DAW
-- [Creation-Engine](https://github.com/wwestlake/Creation-Engine) — game engine
-- Creation Live — streaming / broadcast control
+This is an evolving editor. See [Capabilities](docs/CAPABILITIES.md) for current limits, job semantics, and the focused reliability check. It is not yet a finished professional editing or distribution package.
 
-## Goals For This Scaffold
+## Shared workspace and build
 
-- establish the same JUCE app shell conventions as the other Creation apps
-- adopt the same LLVM discovery pattern as Creation Engine
-- reserve a per-app language host layer so one shared language can exist across all apps while still enforcing domain boundaries
-
-## Layout
-
-- `Source/` — desktop app shell and main workspace scaffold
-- `Language/` — per-app language host policy for the shared Creation language
-- `cmake/` — shared LLVM discovery helpers
-- `docs/` — design and rollout notes
-
-Key docs:
-
-- `docs/CREATION_MOVIE_VISION.md` â€” suite-native product vision
-- `docs/CAPABILITIES.md` â€” current scope summary
-- `docs/LANGUAGE_ROLLOUT.md` â€” shared language boundary notes
-
-## Building
-
-Requires CMake 3.22+, Visual Studio 17 2022, and the shared JUCE checkout already used by Creation Station and Creation Engine.
+Use the single shared checkout and its `build/` directory. Follow this repo's `AGENTS.md` and the umbrella instructions. Build the application incrementally, with one worker:
 
 ```powershell
-$env:JUCE_DIR="D:\JUCE2\JUCE"
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-cmake --build build --config Debug
+cmake --build build --config Debug --target CreationMovieApp -- /m:1
 ```
 
-## LLVM / Language Setup
+The executable is `build/CreationMovieApp_artefacts/Debug/Djehuti Movie.exe`. The existing CMake configuration uses the suite JUCE checkout and a pinned shared FFmpeg SDK; its DLLs are copied alongside the development executable. Do not recreate the build or run dependency installers as a routine verification step. LLVM changes require separate authorization under the suite rules.
 
-This repo uses the same additive LLVM discovery approach as Creation Engine:
+## Storage and automation
 
-- first look for `vcpkg_installed/x64-windows` in this repo
-- otherwise fall back to `D:\000 Creation Engine\vcpkg_installed\x64-windows`
+Run the shared suite VFS service using the configured suite storage root. Movie projects contain a versioned `Project/movie-state.json` entry and imported media in that project container. External files enter through import; exports go to a user-selected destination. There is no second local project-file authority.
 
-That lets Creation Movie share the already-built Windows LLVM install on this machine while still supporting its own manifest-local install later.
+The API discovery record is the VFS suite entry `agents/movie.json`. It contains the current loopback address and bearer token; do not publish that token. Discover command schemas through `/v1/commands`. Submit commands through `/v1/commands/<name>` and inspect the returned request through `/v1/requests/<requestId>`.
 
-## Status
+For create, open, save, import, and export, command acceptance returns a `jobId`. Wait for the matching job in `/v1/app/jobs` to reach a terminal status. `completed` means the result has also been applied to the document. See the job contract in [Capabilities](docs/CAPABILITIES.md).
 
-Scaffold only. The current app is a placeholder shell showing the intended workspace shape and shared-language host boundary.
+## Other documentation
+
+- [Product vision](docs/CREATION_MOVIE_VISION.md)
+- [Language integration boundaries](docs/LANGUAGE_ROLLOUT.md)
+- [Current implementation handoff](HANDOFF.md)

@@ -20,7 +20,8 @@ private:
     class Library;class Monitor;class Timeline;class Inspector;
     struct Job
     {
-        juce::String id,type,status{"idle"},error;
+        // Message-thread fields. Workers may access only progress and cancel.
+        juce::String id,type,projectId,status{"idle"},error;
         juce::var result;
         std::atomic<double> progress{0};std::atomic<bool> cancel{false};
     };
@@ -28,6 +29,7 @@ private:
     Result execute(const juce::String&,const juce::var&);
     Result startJob(const juce::String&,std::function<juce::var(Job&)>,std::function<void(const juce::var&)> completed = {});
     void registerCommands();void runUi(const juce::String&,const juce::var& = movie::object({}));
+    void confirmProjectChange(const juce::String&, const juce::var&);
     void changed();void refresh();void selectClip(const juce::String&);void selectMedia(const juce::String&);
     juce::var state()const;juce::var jobs()const;
     void chooseImport();void chooseExport();void newProjectDialog();void openProjectMenu();void titleDialog();void showSettings();void showHelp();
@@ -60,5 +62,6 @@ private:
     double visibleStart=0,pixelsPerSecond=35,lastPreviewTime=-1;
     std::shared_ptr<Job> job=std::make_shared<Job>();std::thread worker;
     bool closing=false,quitAfterSave=false;int autosaveTicks=0;
+    std::function<void()> afterSave;
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };

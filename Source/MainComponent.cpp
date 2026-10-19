@@ -868,11 +868,12 @@ MainComponent::~MainComponent()
 {
     closing = true;
     stopTimer();
+    api.stop();
+    engineer.cancel();
     if (job)
         job->cancel = true;
     if (worker.joinable())
         worker.join();
-    api.stop();
     if (dock)
     {
         juce::String layoutErr;
@@ -928,11 +929,21 @@ bool MainComponent::keyPressed(const juce::KeyPress& key)
 void MainComponent::requestQuit()
 {
     if (job && job->status == "running")
-        job->cancel = true;
-    if (worker.joinable())
-        worker.join();
-    if (document.dirty && session.isValid())
-        execute("movie.project.save", movie::object({}));
+    {
+        warn("A background job is still running. Wait for completion, or cancel it before closing.");
+        return;
+    }
+    if (document.dirty)
+    {
+        quitAfterSave = true;
+        const auto result = execute("movie.project.save", movie::object({}));
+        if (! result.ok)
+        {
+            quitAfterSave = false;
+            warn("Movie remains open: " + result.message);
+        }
+        return;
+    }
     juce::JUCEApplication::getInstance()->quit();
 }
 
@@ -950,52 +961,70 @@ MainComponent::Result MainComponent::startJob(const juce::String& type,
     auto active = std::make_shared<Job>();
     active->id = juce::Uuid().toString();
     active->type = type;
+    active->projectId = session.isValid() ? session.getProjectId() : juce::String();
     active->status = "running";
     job = active;
     refresh();
 
-    worker = std::thread([this, active, work = std::move(work), completed = std::move(completed)]
+    const juce::Component::SafePointer<MainComponent> safe(this);
+    worker = std::thread([safe, active, work = std::move(work), completed = std::move(completed)]
     {
+        juce::var out;
+        juce::String error;
         try
         {
-            auto out = work(*active);
-            if (active->cancel.load())
-            {
-                active->status = "cancelled";
-                active->error = "Cancelled.";
-            }
-            else
-            {
-                active->result = out;
-                active->progress = 1.0;
-                active->status = "completed";
-                if (! closing && completed)
-                {
-                    juce::MessageManager::callAsync([this, active, out, completed]
-                    {
-                        if (! closing)
-                        {
-                            completed(out);
-                            lastStatus = "Completed " + active->type + " job.";
-                            refresh();
-                        }
-                    });
-                }
-            }
+            out = work(*active);
         }
         catch (const std::exception& e)
         {
-            active->error = e.what();
-            active->status = active->cancel.load() ? "cancelled" : "failed";
-            if (! closing)
-            {
-                juce::MessageManager::callAsync([this, msg = active->error]
-                {
-                    if (! closing)
-                        warn(msg);
-                });
-            }
+            error = e.what();
         }
+        catch (...) { error = "Unexpected background job failure."; }
+        // Apply the result first, then publish completion. No worker reads UI state
+        // or writes strings/vars concurrently with the API and UI timers.
+        juce::MessageManager::callAsync([safe, active, out, error, completed]() mutable
+        {
+            if (! safe || safe->closing || safe->job != active)
+                return;
+            if (error.isEmpty())
+            {
+                try { if (completed) completed(out); }
+                catch (const std::exception& e) { error = e.what(); }
+                catch (...) { error = "Could not apply the background result."; }
+            }
+            active->result = out;
+            active->error = error;
+            if (error.isNotEmpty())
+            {
+                active->status = active->cancel.load() ? "cancelled" : "failed";
+                safe->quitAfterSave = false;
+                safe->afterSave = {};
+                safe->lastStatus = error;
+            }
+            else
+            {
+                // A cancellation that arrives after the operation committed does
+                // not turn a successful write into a falsely reported cancellation.
+                active->status = "completed";
+                active->progress = 1.0;
+                safe->lastStatus = "Completed " + active->type + " job.";
+            }
+            safe->refresh();
+            if (error.isEmpty() && active->type == "save")
+            {
+                if (safe->quitAfterSave)
+                {
+                    safe->quitAfterSave = false;
+                    juce::JUCEApplication::getInstance()->quit();
+                }
+                else if (safe->afterSave)
+                {
+                    auto next = std::move(safe->afterSave);
+                    safe->afterSave = {};
+                    next();
+                }
+            }
+        });
     });
 
     return Result::success(
@@ -1013,6 +1042,13 @@ MainComponent::Result MainComponent::execute(const juce::String& name, const juc
         return Result::success(state());
     if (name == "movie.jobs.get")
         return Result::success(jobs());
+    if (name == "movie.app.close")
+    {
+        if (job && job->status == "running")
+            return Result::failure("job_busy", "Wait for the current job or cancel it before closing.");
+        requestQuit();
+        return Result::success(movie::object({ { "savePending", quitAfterSave } }));
+    }
     if (name == "movie.job.cancel")
     {
         if (job && job->status == "running")
@@ -1025,76 +1061,105 @@ MainComponent::Result MainComponent::execute(const juce::String& name, const juc
         return Result::success(jobs());
     }
 
-    if (name == "movie.project.new")
+    const bool transport = name.startsWith("movie.transport.") || name == "movie.select";
+    if (job && job->status == "running" && ! transport)
+        return Result::failure("job_busy", "Wait for the background job to finish or cancel it. Transport and state inspection remain available.");
+    if ((name == "movie.project.new" || name == "movie.project.open") && document.dirty
+        && ! static_cast<bool>(a.getProperty("discardChanges", false)))
+        return Result::failure("unsaved_changes", "Save the current project first, or explicitly set discardChanges to true.");
+
+    if (name == "movie.project.new" || name == "movie.project.open")
     {
-        const juce::String projName = a.getProperty("name", "Untitled Movie").toString().trim();
-        if (projName.isEmpty())
-            return Result::failure("invalid_name", "Project name cannot be empty.");
-
-        juce::String err;
-        if (! creation::assets::ProjectWorkspaceService::createProject(
-                settings, creation::assets::SuiteAppDomain::movie, projName, "0.0.1", "0.0.1", session, err))
-            return Result::failure("project_create_failed", err);
-
-        movie::Sequence seq;
-        seq.projectId = session.getProjectId();
-        seq.name = projName;
-        if (movie::finiteNumber(a["width"]))  seq.width  = (int) a["width"];
-        if (movie::finiteNumber(a["height"])) seq.height = (int) a["height"];
-        if (movie::finiteNumber(a["fpsNum"])) seq.fpsNum = (int) a["fpsNum"];
-        if (movie::finiteNumber(a["fpsDen"])) seq.fpsDen = (int) a["fpsDen"];
-        document.replace(std::move(seq), false);
-        engineer.setProjectId(session.getProjectId());
-        cards->refresh();
-        execute("movie.project.save", movie::object({}));
-        return Result::success(state(), { "Created project " + projName });
-    }
-
-    if (name == "movie.project.open")
-    {
-        const juce::String projectId = a["projectId"].toString().trim();
-        if (projectId.isEmpty())
-            return Result::failure("missing_project_id", "projectId is required.");
-
-        juce::String err;
-        if (! creation::assets::ProjectWorkspaceService::openProject(settings, projectId, session, err))
-            return Result::failure("project_open_failed", err);
-
-        movie::Sequence loaded;
-        loaded.projectId = session.getProjectId();
-        loaded.name = session.getManifest().projectName.isNotEmpty() ? session.getManifest().projectName : "Movie Project";
-        juce::MemoryBlock block;
-        if (session.readEntry(kMovieStateEntry, block))
+        const bool create = name == "movie.project.new";
+        auto nextSession = std::make_shared<creation::assets::ProjectSession>();
+        auto nextSequence = std::make_shared<movie::Sequence>();
+        const auto config = settings;
+        if (create)
         {
-            juce::String parseErr;
-            if (! movie::Sequence::fromJson(juce::JSON::parse(block.toString()), loaded, parseErr))
-                return Result::failure("corrupt_sequence", parseErr);
-            loaded.projectId = session.getProjectId();
+            nextSequence->name = a.getProperty("name", "Untitled Movie").toString().trim();
+            if (nextSequence->name.isEmpty())
+                return Result::failure("invalid_name", "Project name cannot be empty.");
+            if (a.hasProperty("width")) nextSequence->width = (int)a["width"];
+            if (a.hasProperty("height")) nextSequence->height = (int)a["height"];
+            if (a.hasProperty("fpsNum")) nextSequence->fpsNum = (int)a["fpsNum"];
+            if (a.hasProperty("fpsDen")) nextSequence->fpsDen = (int)a["fpsDen"];
+            movie::Sequence checked;
+            juce::String validation;
+            if (!movie::Sequence::fromJson(nextSequence->toJson(), checked, validation))
+                return Result::failure("invalid_sequence", validation);
         }
-        document.replace(std::move(loaded), true);
-        engineer.setProjectId(session.getProjectId());
-        cards->refresh();
-        return Result::success(state(), { "Opened project " + document.sequence.name });
+        else if (a["projectId"].toString().trim().isEmpty())
+            return Result::failure("missing_project_id", "projectId is required.");
+        playback.play(false);
+        sourcePlayback.play(false);
+        return startJob(create ? "new" : "open",
+            [create, config, a, nextSession, nextSequence](Job& j)
+            {
+                juce::String error;
+                if (j.cancel.load()) throw std::runtime_error("Project operation cancelled.");
+                if (create)
+                {
+                    if (!creation::assets::ProjectWorkspaceService::createProject(config,
+                            creation::assets::SuiteAppDomain::movie, nextSequence->name,
+                            "0.0.1", "0.0.1", *nextSession, error))
+                        throw std::runtime_error(error.toStdString());
+                    nextSequence->projectId = nextSession->getProjectId();
+                    const auto json = juce::JSON::toString(nextSequence->toJson());
+                    if (!nextSession->writeEntry(kMovieStateEntry, juce::MemoryBlock(json.toRawUTF8(), json.getNumBytesAsUTF8())))
+                        throw std::runtime_error(nextSession->getLastWriteError().toStdString());
+                    if (!nextSession->commit(error)) throw std::runtime_error(error.toStdString());
+                }
+                else
+                {
+                    if (!creation::assets::ProjectWorkspaceService::openProject(config, a["projectId"].toString(), *nextSession, error))
+                        throw std::runtime_error(error.toStdString());
+                    juce::MemoryBlock block;
+                    if (!nextSession->readEntry(kMovieStateEntry, block))
+                        throw std::runtime_error("The selected project has no readable saved Movie sequence.");
+                    if (!movie::Sequence::fromJson(juce::JSON::parse(block.toString()), *nextSequence, error))
+                        throw std::runtime_error(error.toStdString());
+                    nextSequence->projectId = nextSession->getProjectId();
+                    if (j.cancel.load()) throw std::runtime_error("Opening project cancelled.");
+                }
+                return movie::object({{"projectId",nextSession->getProjectId()},{"name",nextSequence->name}});
+            },
+            [this, nextSession, nextSequence](const juce::var&)
+            {
+                // The current session is replaced only after the new one is valid.
+                session = *nextSession;
+                selectedClip = {}; selectedMedia = {};
+                document.replace(*nextSequence, true);
+                playback.seek(0);
+                sourcePlayback.setSequence(movie::Sequence{});
+                engineer.setProjectId(session.getProjectId());
+                cards->refresh();
+            });
     }
 
     if (name == "movie.project.save")
     {
-        if (! session.isValid())
+        if (!session.isValid())
             return Result::failure("no_project", "No active VFS project session.");
-
-        const auto jsonText = juce::JSON::toString(document.sequence.toJson());
-        juce::MemoryBlock block(jsonText.toRawUTF8(), jsonText.getNumBytesAsUTF8());
-        if (! session.writeEntry(kMovieStateEntry, block))
-            return Result::failure("vfs_write_failed", session.getLastWriteError());
-
-        juce::String commitErr;
-        if (! session.commit(commitErr))
-            return Result::failure("vfs_commit_failed", commitErr);
-
-        document.dirty = false;
-        lastStatus = "Saved project to VFS.";
-        refresh();
-        return Result::success(state(), { "Saved project " + document.sequence.name });
+        const auto snapshot = document.sequence;
+        auto target = session;
+        return startJob("save", [snapshot, target](Job& j) mutable
+            {
+                if (j.cancel.load()) throw std::runtime_error("Save cancelled before writing.");
+                const auto json = juce::JSON::toString(snapshot.toJson());
+                if (!target.writeEntry(kMovieStateEntry, juce::MemoryBlock(json.toRawUTF8(), json.getNumBytesAsUTF8())))
+                    throw std::runtime_error(target.getLastWriteError().toStdString());
+                juce::String error;
+                if (!target.commit(error)) throw std::runtime_error(error.toStdString());
+                return movie::object({{"projectId",target.getProjectId()}});
+            },
+            [this, snapshot](const juce::var&)
+            {
+                if (session.getProjectId() != snapshot.projectId)
+                    throw std::runtime_error("Save completed for a different project; current edits remain unsaved.");
+                if (juce::JSON::toString(document.sequence.toJson()) != juce::JSON::toString(snapshot.toJson()))
+                    throw std::runtime_error("The saved snapshot is older than the current edits. Movie remains open; save again.");
+                document.dirty = false;
+            });
     }
 
     if (name == "movie.media.import")
@@ -1146,8 +1211,10 @@ MainComponent::Result MainComponent::execute(const juce::String& name, const juc
                     { "info", vfsProbe.info().toJson() }
                 });
             },
-            [this](const juce::var& res)
+            [this, projId](const juce::var& res)
             {
+                if (session.getProjectId() != projId || document.sequence.projectId != projId)
+                    throw std::runtime_error("Import belongs to a different project; it was not applied here.");
                 movie::Media m;
                 m.id = res["id"].toString();
                 m.versionId = res["versionId"].toString();
@@ -1157,7 +1224,7 @@ MainComponent::Result MainComponent::execute(const juce::String& name, const juc
 
                 auto next = document.sequence;
                 next.media.push_back(m);
-                document.replace(std::move(next), false);
+                document.restore(next.toJson());
                 selectMedia(m.id);
             });
     }
@@ -1341,20 +1408,24 @@ void MainComponent::registerCommands()
         Effect::read, schemaObj({}));
     reg("movie.jobs.get", "Get Background Jobs", "Returns the current or most recent background media job status.",
         Effect::read, schemaObj({}));
-    reg("movie.job.cancel", "Cancel Background Job", "Signals cancellation to the active import or export job.",
+    reg("movie.app.close", "Close Movie", "Closes Movie after saving dirty edits. Refuses while a job is active; a failed save keeps the app open and the document dirty.",
+        Effect::external, schemaObj({}));
+    reg("movie.job.cancel", "Cancel Background Job", "Requests cancellation of the active job. Inspect its terminal status: already committed writes remain completed.",
         Effect::write, schemaObj({}));
 
-    reg("movie.project.new", "New Movie Project", "Creates a new VFS-backed Movie project.",
+    reg("movie.project.new", "New Movie Project", "Creates a new VFS Movie project in a background job. Wait for job completion; unsaved edits require saving or explicit discardChanges.",
         Effect::destructive, schemaObj({
             { "name", movie::object({ { "type", "string" } }) },
             { "width", movie::object({ { "type", "integer" } }) },
             { "height", movie::object({ { "type", "integer" } }) },
             { "fpsNum", movie::object({ { "type", "integer" } }) },
-            { "fpsDen", movie::object({ { "type", "integer" } }) }
+            { "fpsDen", movie::object({ { "type", "integer" } }) },
+            { "discardChanges", movie::object({ { "type", "boolean" } }) }
         }));
-    reg("movie.project.open", "Open Movie Project", "Opens an existing VFS Movie project by projectId.",
-        Effect::destructive, schemaObj({ { "projectId", movie::object({ { "type", "string" } }) } }, { "projectId" }));
-    reg("movie.project.save", "Save Movie Project", "Persists the sequence to Project/movie-state.json in the VFS.",
+    reg("movie.project.open", "Open Movie Project", "Opens a VFS Movie project in a background job. Wait for completion; a failed open preserves the current document. Unsaved edits require saving or explicit discardChanges.",
+        Effect::destructive, schemaObj({ { "projectId", movie::object({ { "type", "string" } }) },
+            { "discardChanges", movie::object({ { "type", "boolean" } }) } }, { "projectId" }));
+    reg("movie.project.save", "Save Movie Project", "Saves the sequence in a background job. Wait for movie.jobs.get to report completed; a failed save keeps the document dirty and the app open.",
         Effect::external, schemaObj({}));
 
     reg("movie.media.import", "Import Media File",
@@ -1434,18 +1505,49 @@ void MainComponent::registerCommands()
         }, { "path" }));
 
     api.addAppEndpoint("state", "Full Movie state including sequence, transport, and active job", [this] { return state(); });
-    api.addAppEndpoint("jobs", "Background import/export job status", [this] { return jobs(); });
+    api.addAppEndpoint("jobs", "Background project/import/export job status; completed means its result has been applied", [this] { return jobs(); });
     api.addAppEndpoint("sequence", "Current Movie sequence JSON", [this] { return document.sequence.toJson(); });
 }
 
 void MainComponent::runUi(const juce::String& name, const juce::var& a)
 {
+    if ((name == "movie.project.new" || name == "movie.project.open") && document.dirty
+        && ! static_cast<bool>(a.getProperty("discardChanges", false)) && job->status != "running")
+    {
+        confirmProjectChange(name, a);
+        return;
+    }
     const auto res = execute(name, a);
     if (! res.ok)
         warn(res.message);
     else if (! res.changes.isEmpty())
         lastStatus = res.changes[0];
     refresh();
+}
+
+void MainComponent::confirmProjectChange(const juce::String& name, const juce::var& a)
+{
+    const juce::Component::SafePointer<MainComponent> safe(this);
+    juce::AlertWindow::showYesNoCancelBox(juce::MessageBoxIconType::QuestionIcon,
+        "Unsaved Movie edits", "Save the current project before switching?",
+        "Save", "Discard", "Cancel", this,
+        juce::ModalCallbackFunction::create([safe, name, a](int choice)
+        {
+            if (!safe || safe->closing || choice == 0) return;
+            if (choice == 1)
+            {
+                safe->afterSave = [safe, name, a] { if (safe) safe->runUi(name, a); };
+                const auto result = safe->execute("movie.project.save", movie::object({}));
+                if (!result.ok) { safe->afterSave = {}; safe->warn(result.message); }
+            }
+            else
+            {
+                auto* args = new juce::DynamicObject();
+                if (auto* original = a.getDynamicObject()) args->getProperties() = original->getProperties();
+                args->setProperty("discardChanges", true);
+                safe->runUi(name, juce::var(args));
+            }
+        }));
 }
 
 void MainComponent::changed()
@@ -1556,6 +1658,7 @@ juce::var MainComponent::jobs() const
     return movie::object({
         { "id", job->id },
         { "type", job->type },
+        { "projectId", job->projectId },
         { "status", job->status },
         { "progress", job->progress.load() },
         { "error", job->error },
@@ -1754,7 +1857,8 @@ void MainComponent::timerCallback()
     if (sourcePlayback.playing())
         sourcePlayback.requestPreview(sourcePlayback.position());
 
-    if (document.dirty && session.isValid() && (++autosaveTicks >= 300))
+    if (document.dirty && session.isValid() && !playback.playing()
+        && job->status != "running" && (++autosaveTicks >= 1800))
     {
         autosaveTicks = 0;
         execute("movie.project.save", movie::object({}));
