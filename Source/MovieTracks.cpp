@@ -38,12 +38,13 @@ bool sourceValid(const Track& t, juce::String& error)
 }
 juce::var Track::toJson() const
 {
-    juce::Array<juce::var> curve;
+    juce::Array<juce::var> curve,chain;
+    for(const auto& e:effects)chain.add(e.toJson());
     for (const auto& p : points)
         curve.add(object({{"id",p.id},{"seconds",p.seconds},{"value",p.value},
             {"shape",creation::timeline::toStorageToken(p.shape)},{"tension",p.tension}}));
     return object({{"id",id},{"name",name},{"type",type},{"enabled",enabled},{"height",heightPixels},
-        {"armed",armed},{"monitoring",monitoring},{"legacyMixed",legacyMixed},{"source",source},
+        {"armed",armed},{"monitoring",monitoring},{"legacyMixed",legacyMixed},{"source",source},{"effects",chain},
         {"automation",object({{"trackId",targetTrackId},{"clipId",targetClipId},{"effectId",targetEffectId},
             {"parameterId",parameterId},{"points",curve}})}});
 }
@@ -61,6 +62,7 @@ bool Track::fromJson(const juce::var& v, Track& result, juce::String& error)
     t.heightPixels=v["height"]; t.source=v["source"].clone();
     if ((t.armed || t.monitoring) && t.type!="audio" && t.type!="video") return fail("Only audio/video tracks support arm/monitor preferences.");
     if (!sourceValid(t,error)) return false;
+    if(v.hasProperty("effects") && !parseEffects(v["effects"],t.id,t.type,t.effects,error))return false;
     const auto automation=v["automation"];
     t.targetTrackId=automation["trackId"].toString(); t.targetClipId=automation["clipId"].toString();
     t.targetEffectId=automation["effectId"].toString(); t.parameterId=automation["parameterId"].toString();

@@ -2,6 +2,12 @@
 
 ## Implemented foundation
 
+Milestone 3 adds functional track effects through the common preview/export
+renderer: gain, balance, fades, filtering, colour, opacity and crop/transform.
+The docked Effects browser/inspector edits ordered, persistent, undoable chains.
+See [Effects](EFFECTS.md) for schema-4 compatibility, processing order, validation
+and the explicit effects-track routing/performance limitations.
+
 - Docked media, source/program preview, timeline, properties and agent surfaces.
 - FFmpeg-backed probing and decoding, including direct reads from project VFS entries.
 - Source-aware clip placement, trimming and splitting; removal and ripple deletion.

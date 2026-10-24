@@ -4,11 +4,53 @@
 class MainComponent::TrackUiCheck final : private juce::Timer
 {
 public:
-    TrackUiCheck(MainComponent& component,juce::File destination,juce::File media):owner(component),output(std::move(destination)),inputVideo(std::move(media))
+    TrackUiCheck(MainComponent& component,juce::File destination,juce::File media,bool effects=false):owner(component),output(std::move(destination)),inputVideo(std::move(media)),effectsMode(effects)
     {
         original=owner.session.getProjectId();output.createDirectory();startTimer(250);
     }
 private:
+    void insertEffect(const char* type)
+    {
+        auto& panel=*owner.effectsPanel;const auto found=std::find(panel.available.begin(),panel.available.end(),type);
+        require(found!=panel.available.end(),"Effect browser did not expose compatible effect");
+        panel.browser.setSelectedId((int)(found-panel.available.begin())+1,juce::dontSendNotification);panel.add.triggerClick();
+    }
+    void parameter(const char* id,double value)
+    {
+        for(auto* control:owner.effectsPanel->sliders)if(control->getComponentID()==id){control->setValue(value,juce::sendNotificationSync);return;}
+        throw std::runtime_error("Missing metadata-driven parameter control");
+    }
+    double rms(const std::vector<float>& data){double sum=0;for(float x:data)sum+=x*x;return std::sqrt(sum/data.size());}
+    void verifyEffectsMedia()
+    {
+        const auto sequence=owner.document.sequence;auto baseline=sequence;
+        for(auto& t:baseline.tracks)t.effects.clear();
+        movie::Renderer original(baseline),processed(sequence);
+        const auto before=original.video(0,640,360),after=processed.video(0,640,360);
+        double difference=0;
+        for(int y=0;y<360;y+=4)for(int x=0;x<640;x+=4){const auto a=before.getPixelAt(x,y),b=after.getPixelAt(x,y);difference+=std::abs(a.getRed()-b.getRed())+std::abs(a.getGreen()-b.getGreen())+std::abs(a.getBlue()-b.getBlue());}
+        require(difference>1000,"Configured video effects did not change rendered pixels");
+        auto audioBase=baseline,audioProcessed=sequence;
+        for(auto& t:audioBase.tracks)t.enabled=t.id==audio;
+        for(auto& t:audioProcessed.tracks)t.enabled=t.id==audio;
+        movie::Renderer dry(audioBase),wet(audioProcessed);std::vector<float> drySamples(9600),wetSamples(9600);
+        dry.audio(0,4800,48000,drySamples.data());wet.audio(0,4800,48000,wetSamples.data());
+        const double dryRms=rms(drySamples),wetRms=rms(wetSamples);require(dryRms>0 && wetRms<dryRms*.7,"Configured audio effects did not change actual samples");
+        // The exact production renderer is used by both playback workers and export.
+        movie::MediaReader exportedVideo(output.getChildFile("effects-sample.mkv").createInputStream(),"effects-sample.mkv",movie::MediaReader::Kind::video);
+        const auto decoded=exportedVideo.videoAt(0,640,360);int pixelError=0;
+        for(int y=0;y<360;y+=4)for(int x=0;x<640;x+=4){const auto a=after.getPixelAt(x,y),b=decoded.getPixelAt(x,y);pixelError=std::max({pixelError,std::abs(a.getRed()-b.getRed()),std::abs(a.getGreen()-b.getGreen()),std::abs(a.getBlue()-b.getBlue())});}
+        require(pixelError<=1,"Export and preview-render video disagree");
+        movie::MediaReader exportedAudio(output.getChildFile("effects-sample.mkv").createInputStream(),"effects-sample.mkv",movie::MediaReader::Kind::audio);
+        std::vector<float> expected(2048),decodedAudio(2048);movie::Renderer reference(sequence);reference.audio(0,1024,48000,expected.data());exportedAudio.audioAt(0,1024,48000,decodedAudio.data());
+        double audioError=0;for(size_t i=0;i<expected.size();++i)audioError=std::max(audioError,(double)std::abs(expected[i]-decodedAudio[i]));require(audioError<.0001,"Export and preview-render audio disagree");
+        movie::Renderer continuous(audioProcessed),seeked(audioProcessed);std::vector<float> block(2048),sought(2048);
+        for(int offset=0;offset<24000;){const int n=std::min(1024,24000-offset);continuous.audio((double)offset/48000,n,48000,block.data());offset+=n;}
+        continuous.audio(.5,1024,48000,block.data());seeked.audio(.5,1024,48000,sought.data());
+        double seekError=0;for(size_t i=0;i<block.size();++i)seekError=std::max(seekError,(double)std::abs(block[i]-sought[i]));require(seekError<.0001,"Seeking corrupted filter state");
+        output.getChildFile("effects-media-results.json").replaceWithText(juce::JSON::toString(movie::object({{"pixelDifferenceSum",difference},{"dryRms",dryRms},{"processedRms",wetRms},{"exportPixelError",pixelError},{"exportAudioError",audioError},{"seekError",seekError}})));
+        passed("Real pixels/samples change; decoded FFV1/PCM export matches preview renderer; seeking restores filter state");
+    }
     void require(bool condition,const char* message){if(!condition)throw std::runtime_error(message);}
     void passed(const char* message){checks.add(message);}
     void snapshot(const char* name)
@@ -141,6 +183,34 @@ private:
                 case 17:
                     require(saved==juce::JSON::toString(owner.document.sequence.toJson()),"GUI edits did not survive save/reopen");
                     require(owner.document.sequence.findTrack(video)==1,"Stable identity lost on reopen");passed("GUI-edited multitrack project saves and reopens identically");
+                    if(effectsMode){owner.selectTrack(video);owner.dock->activatePanel("effects");insertEffect("video.colour");step=30;}
+                    else{record();owner.runUi("movie.project.open",movie::object({{"projectId",original},{"discardChanges",true}}));step=90;}break;
+                case 30:parameter("brightness",.45);parameter("contrast",1.3);parameter("blue",.6);insertEffect("video.opacity");break;
+                case 31:parameter("opacity",.5);owner.effectsPanel->bypass.triggerClick();break;
+                case 32:
+                    require(owner.document.sequence.tracks[(size_t)owner.document.sequence.findTrack(video)].effects.back().bypassed,"Bypass GUI failed");
+                    owner.effectsPanel->up.triggerClick();break;
+                case 33:
+                    require(owner.document.sequence.tracks[(size_t)owner.document.sequence.findTrack(video)].effects.front().type=="video.opacity","Chain reorder GUI failed");
+                    owner.effectsPanel->remove.triggerClick();break;
+                case 34:
+                    require(owner.document.sequence.tracks[(size_t)owner.document.sequence.findTrack(video)].effects.size()==1,"Effect removal GUI failed");
+                    owner.runUi("movie.timeline.undo");require(owner.document.sequence.tracks[(size_t)owner.document.sequence.findTrack(video)].effects.size()==2,"Effect removal undo failed");
+                    owner.runUi("movie.timeline.redo");owner.runUi("movie.timeline.undo");passed("Effects browser insertion, parameter widgets, bypass, reorder, removal and undo/redo work in mounted window");
+                    owner.selectTrack(audio);owner.dock->activatePanel("effects");insertEffect("audio.gain");break;
+                case 35:parameter("gain",.35);insertEffect("audio.filter");break;
+                case 36:parameter("cutoff",600);insertEffect("audio.fade");break;
+                case 37:parameter("in",.05);parameter("out",.05);saved=juce::JSON::toString(owner.document.sequence.toJson());owner.runUi("movie.project.save");break;
+                case 38:owner.runUi("movie.project.open",movie::object({{"projectId",project}}));break;
+                case 39:
+                    require(saved==juce::JSON::toString(owner.document.sequence.toJson()),"Effects save/reopen changed configuration");
+                    owner.selectTrack(video);owner.dock->activatePanel("effects");snapshot("effects-ui-demo.png");
+                    owner.runUi("movie.export",movie::object({{"path",output.getChildFile("effects-sample.mkv").getFullPathName()},{"preset","ffv1"}}));break;
+                case 40:
+                    verifyEffectsMedia();owner.runUi("movie.export",movie::object({{"path",output.getChildFile("effects-sample.mp4").getFullPathName()},{"preset","mp4"}}));break;
+                case 41:
+                    require(output.getChildFile("effects-sample.mp4").getSize()>1000,"Processed MP4 export failed");
+                    passed("Effects configuration preserves identities after save/reopen; processed MP4 and FFV1 samples exported");
                     record();owner.runUi("movie.project.open",movie::object({{"projectId",original},{"discardChanges",true}}));step=90;break;
                 case 90:stopTimer();owner.requestQuit();break;
             }
@@ -152,6 +222,6 @@ private:
             owner.runUi("movie.project.open",movie::object({{"projectId",original},{"discardChanges",true}}));step=90;
         }
     }
-    MainComponent& owner;juce::File output,inputVideo;juce::String original,project,video,audio,image,saved,error;juce::Array<juce::var> checks;int step=0;
+    MainComponent& owner;juce::File output,inputVideo;juce::String original,project,video,audio,image,saved,error;juce::Array<juce::var> checks;int step=0;bool effectsMode=false;
 };
 #endif

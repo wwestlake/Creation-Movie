@@ -1,6 +1,6 @@
 # Track management interface
 
-The timeline reads the version-3 track document directly. No UI track list or
+The timeline reads the versioned track document directly. No UI track list or
 separate persistence exists. Selection, scroll position and inline rename state
 are transient; names, types, heights, sources and preferences use the existing
 undoable `movie.track.*` commands.
@@ -49,7 +49,9 @@ configuration only**. A source label and optional requested format can be saved;
 no device is enumerated, opened, monitored or recorded. Apply Source commits the
 descriptor; Clear Source removes it. Neither changes existing clip contents.
 
-Effects tracks display their deferred-processing status. Automation tracks show
+Effects tracks explain that their routing is undefined; ordinary audio, video
+and image tracks have functional effects through the docked [Effects browser](EFFECTS.md).
+Automation tracks show
 the stored target's track/clip names, parameter, effect-presence indication and
 point count. Curves, bindings and effect IDs are preserved; no automation runtime
 or curve editor is introduced.

@@ -174,7 +174,7 @@ try:
         http(url, legacy, method='PUT')
         wait_job(command('movie.project.open', {'projectId': a}))
         migrated = get('/v1/app/sequence')
-        assert migrated['version'] == 3 and len(migrated['tracks']) == 8
+        assert migrated['version'] == 4 and len(migrated['tracks']) == 8
         for old, new in zip(legacy['clips'], migrated['clips']):
             assert new['trackId'] == 'legacy-track-' + str(old['track'])
             for key in ('assetId', 'startFrame', 'durationFrames', 'sourceIn', 'params'):

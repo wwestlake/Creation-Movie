@@ -7,6 +7,7 @@ static void edit(Document& d,const char* command,juce::var args)
 {
     juce::String error;check(d.edit(command,args,error),error.toRawUTF8());
 }
+#include "EffectsTests.inc"
 int main()
 {
     try
@@ -81,6 +82,7 @@ int main()
         const creation::timeline::AutomationPoint a{"a",0,0,creation::timeline::AutomationCurveShape::linear,0};
         const creation::timeline::AutomationPoint b{"b",1,1,creation::timeline::AutomationCurveShape::linear,0};
         check(creation::timeline::evaluateAutomationSegment(a,b,0.5)==0.5f,"Shared curve evaluator unavailable");
+        runEffectsTests();
         std::cout<<"PASS: migration, stable ownership, commands, undo/redo, sources, automation, save/reopen, atomic failure, shared split/curves\n";
         return 0;
     }

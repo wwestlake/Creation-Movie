@@ -8,7 +8,7 @@ public:
     {
         addAndMakeVisible(view);view.setViewedComponent(&form,false);view.setScrollBarsShown(true,false);
         for(auto* c:std::initializer_list<juce::Component*>{&heading,&nameLabel,&name,&typeLabel,&type,&enabled,&armed,&monitor,
-            &heightLabel,&height,&sourceLabel,&category,&media,&identity,&settingsLabel,&widthLabel,&pixelsLabel,&fpsLabel,&rateLabel,&channelsLabel,&width,&pixels,&fps,&rate,&channels,&applySource,&clearSource,&note,&automation,&remove})form.addAndMakeVisible(c);
+            &heightLabel,&height,&sourceLabel,&category,&media,&identity,&settingsLabel,&widthLabel,&pixelsLabel,&fpsLabel,&rateLabel,&channelsLabel,&width,&pixels,&fps,&rate,&channels,&applySource,&clearSource,&note,&automation,&remove,&effects})form.addAndMakeVisible(c);
         heading.setText("Track Inspector",juce::dontSendNotification);
         nameLabel.setText("Name",juce::dontSendNotification);typeLabel.setText("Type",juce::dontSendNotification);
         heightLabel.setText("Lane height",juce::dontSendNotification);sourceLabel.setText("Source",juce::dontSendNotification);
@@ -30,6 +30,7 @@ public:
         category.onChange=[this]{if(!syncing){populateMedia();layout();}};
         applySource.onClick=[this]{saveSource();};clearSource.onClick=[this]{mutate("source",movie::object({{"source",juce::var()}}));};
         remove.onClick=[this]{owner.removeTrack(owner.selectedTrack);};
+        effects.onClick=[this]{if(owner.dock)owner.dock->activatePanel("effects");};
         note.setJustificationType(juce::Justification::topLeft);automation.setJustificationType(juce::Justification::topLeft);
     }
     void sync()
@@ -91,12 +92,13 @@ private:
         auto row=[&](juce::Component& c,int h=26){c.setBounds(10,y,w,h);y+=h+5;};
         row(heading,32);
         for(auto* c:std::initializer_list<juce::Component*>{&nameLabel,&name,&typeLabel,&type,&enabled,&armed,&monitor,&heightLabel,&height,&sourceLabel,&category,&media,&identity,&settingsLabel,&widthLabel,&pixelsLabel,&fpsLabel,&rateLabel,&channelsLabel,&width,&pixels,&fps,&rate,&channels,&applySource,&clearSource,&note,&automation,&remove})c->setVisible(valid);
+        effects.setVisible(valid);
         if(!valid){form.setSize(w+20,std::max(70,view.getHeight()));return;}
         const int i=owner.document.sequence.findTrack(owner.selectedTrack);if(i<0)return;
         const auto& t=owner.document.sequence.tracks[(size_t)i];const bool av=t.type=="video" || t.type=="audio";
         row(nameLabel,18);row(name);row(typeLabel,18);row(type);row(enabled);
         armed.setVisible(av);monitor.setVisible(av);if(av){row(armed);row(monitor);}
-        row(heightLabel,18);row(height);
+        row(heightLabel,18);row(height);row(effects);
         const bool sources=av || t.type=="image";
         sourceLabel.setVisible(sources);category.setVisible(sources);applySource.setVisible(sources);clearSource.setVisible(sources);
         if(sources){row(sourceLabel,18);row(category);}
@@ -111,7 +113,7 @@ private:
         if(videoSettings){row(widthLabel,18);row(width);row(pixelsLabel,18);row(pixels);row(fpsLabel,18);row(fps);}
         if(audioSettings){row(rateLabel,18);row(rate);row(channelsLabel,18);row(channels);}
         if(sources){row(applySource);row(clearSource);}
-        note.setText(live?"Configuration only. No live device discovery, capture or monitoring is active.":t.type=="effects"?"Effects track: processing is not available yet.":"Source changes keep existing clips. Arm and Monitor are saved preferences only.",juce::dontSendNotification);
+        note.setText(live?"Configuration only. No live device discovery, capture or monitoring is active.":t.type=="effects"?"Effects-track routing is undefined. Use effects on a video, audio or image track.":"Source changes keep existing clips. Arm and Monitor are saved preferences only.",juce::dontSendNotification);
         row(note,68);automation.setVisible(t.type=="automation");if(t.type=="automation")row(automation,100);
         row(remove);form.setSize(w+20,std::max(y,view.getHeight()));
     }
@@ -164,12 +166,14 @@ private:
     juce::ComboBox type,height,category,media;
     juce::ToggleButton enabled{"Enabled"},armed{"Arm preference (no recording)"},monitor{"Monitor preference (inactive)"};
     juce::TextButton applySource{"Apply Source"},clearSource{"Clear Source"},remove{"Remove Track..."};
+    juce::TextButton effects{"Effects Browser / Inspector..."};
 };
 void MainComponent::selectTrack(const juce::String& id,bool showInspector)
 {
     if(document.sequence.findTrack(id)<0)return;
     selectedTrack=id;selectedClip={};
     if(trackInspector)trackInspector->sync();
+    if(effectsPanel)effectsPanel->sync();
     if(inspector)inspector->syncFromSelection();
     if(showInspector && dock)dock->activatePanel("track-inspector");
     if(timeline)timeline->repaint();
@@ -197,7 +201,7 @@ void MainComponent::removeTrack(const juce::String& id)
     const int i=document.sequence.findTrack(id);if(i<0)return;
     const auto& t=document.sequence.tracks[(size_t)i];
     const bool occupied=std::any_of(document.sequence.clips.begin(),document.sequence.clips.end(),[&](const movie::Clip& c){return document.sequence.owner(c)==id;});
-    const bool configured=!t.source.isVoid() || t.armed || t.monitoring || !t.points.empty() || t.targetTrackId.isNotEmpty() || t.targetClipId.isNotEmpty() || t.targetEffectId.isNotEmpty() || t.parameterId.isNotEmpty();
+    const bool configured=!t.effects.empty() || !t.source.isVoid() || t.armed || t.monitoring || !t.points.empty() || t.targetTrackId.isNotEmpty() || t.targetClipId.isNotEmpty() || t.targetEffectId.isNotEmpty() || t.parameterId.isNotEmpty();
     if(!occupied && !configured){runUi("movie.track.remove",movie::object({{"trackId",id}}));return;}
     const juce::Component::SafePointer<MainComponent> safe(this);
     juce::AlertWindow::showOkCancelBox(juce::MessageBoxIconType::WarningIcon,"Remove "+t.name+"?",

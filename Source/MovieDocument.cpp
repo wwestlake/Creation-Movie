@@ -45,14 +45,14 @@ juce::var Sequence::toJson() const
             {"durationFrames",(juce::int64)std::llround(x.durationSeconds/frameSeconds())},
             {"sourceIn",x.sourceStartSeconds},{"sourceDuration",x.sourceDurationSeconds},{"params",params}}));
     }
-    return object({{"schema","djehuti-movie-sequence"},{"version",3},{"name",name},{"width",width},{"height",height},
+    return object({{"schema","djehuti-movie-sequence"},{"version",4},{"name",name},{"width",width},{"height",height},
         {"fpsNum",fpsNum},{"fpsDen",fpsDen},{"tracks",t},{"media",a},{"clips",c}});
 }
 bool Sequence::fromJson(const juce::var& v, Sequence& result, juce::String& error)
 {
     auto fail=[&](const juce::String& s){ error=s; return false; };
     const int version=v["version"];
-    if(v["schema"].toString()!="djehuti-movie-sequence" || (version!=2 && version!=3)) return fail("Unsupported Movie sequence schema.");
+    if(v["schema"].toString()!="djehuti-movie-sequence" || (version!=2 && version!=3 && version!=4)) return fail("Unsupported Movie sequence schema.");
     Sequence s; s.name=v["name"].toString(); s.width=v["width"];s.height=v["height"];s.fpsNum=v["fpsNum"];s.fpsDen=v["fpsDen"];
     if(s.width<16 || s.width>8192 || s.height<16 || s.height>8192 || s.fpsNum<1 || s.fpsDen<1
         || (double)s.fpsNum/s.fpsDen>240 || (double)s.fpsNum/s.fpsDen<1) return fail("Invalid sequence dimensions or frame rate.");
@@ -76,6 +76,7 @@ bool Sequence::fromJson(const juce::var& v, Sequence& result, juce::String& erro
         if(!tracks || tracks->size()>4096) return fail("Invalid track list.");
         for(const auto& e:*tracks)
         {
+            if(version==4 && !e["effects"].isArray())return fail("Missing effects chain.");
             Track t; if(!Track::fromJson(e,t,error)) return false;
             if(!ids.insert(t.id).second) return fail("Duplicate track identity.");
             s.tracks.push_back(std::move(t));
@@ -123,8 +124,10 @@ bool Sequence::fromJson(const juce::var& v, Sequence& result, juce::String& erro
         s.clipTracks[x.id]=trackId;
         s.clips.push_back(std::move(x));
     }
+    std::set<juce::String> effectIds;
     for(const auto& t:s.tracks)
     {
+        for(const auto& e:t.effects)if(!effectIds.insert(e.id).second)return fail("Duplicate effect instance identity.");
         if(t.targetTrackId.isNotEmpty() && s.findTrack(t.targetTrackId)<0) return fail("Automation target track is missing.");
         if(t.targetClipId.isNotEmpty() && s.findClip(t.targetClipId)<0) return fail("Automation target clip is missing.");
         if(t.source["category"].toString()=="media")
@@ -151,7 +154,42 @@ bool Document::edit(const juce::String& command,const juce::var& a,juce::String&
     auto s=sequence;
     const auto index=s.findClip(a["clipId"].toString());
     auto fail=[&](const juce::String& why){error=why;return false;};
-    if(command.startsWith("track."))
+    if(command.startsWith("effect."))
+    {
+        const auto action=command.fromFirstOccurrenceOf("effect.",false,false);
+        const int ti=s.findTrack(a["trackId"].toString());if(ti<0)return fail("Select a valid track first.");
+        auto& chain=s.tracks[(size_t)ti].effects;
+        if(action=="add")
+        {
+            const auto type=a["type"].toString();if(!compatibleEffect(s.tracks[(size_t)ti].type,type))return fail("Effect is incompatible. Effects tracks have no defined routing; choose an audio/video/image track.");
+            Effect e;e.id=juce::Uuid().toString();e.type=type;e.ownerId=s.tracks[(size_t)ti].id;
+            chain.push_back(std::move(e));
+        }
+        else
+        {
+            const auto found=std::find_if(chain.begin(),chain.end(),[&](const Effect& e){return e.id==a["effectId"].toString();});
+            if(found==chain.end())return fail("Unknown effect instance.");
+            const int index=(int)(found-chain.begin());
+            if(action=="remove")
+            {
+                for(const auto& t:s.tracks)if(t.targetEffectId==found->id)return fail("Effect is an automation target; clear its stored binding first.");
+                chain.erase(found);
+            }
+            else if(action=="reorder")
+            {
+                if(!a["order"].isInt() || (int)a["order"]<0 || (int)a["order"]>=(int)chain.size())return fail("Invalid effect order.");
+                const auto e=*found;chain.erase(found);chain.insert(chain.begin()+(int)a["order"],e);
+            }
+            else if(action=="parameter")found->values[a["parameterId"].toString()]=a["value"].isDouble() || a["value"].isInt() || a["value"].isInt64()?(double)a["value"]:std::numeric_limits<double>::quiet_NaN();
+            else if(action=="enabled" || action=="bypass")
+            {
+                if(!a["value"].isBool())return fail("Effect state requires a boolean value.");
+                if(action=="enabled")found->enabled=a["value"];else found->bypassed=a["value"];
+            }
+            else return fail("Unknown effect operation.");
+        }
+    }
+    else if(command.startsWith("track."))
     {
         const auto action=command.fromFirstOccurrenceOf("track.",false,false);
         int ti=s.findTrack(a["trackId"].toString());
@@ -168,6 +206,8 @@ bool Document::edit(const juce::String& command,const juce::var& a,juce::String&
             if(action=="remove")
             {
                 const auto id=t.id;
+                for(const auto& other:s.tracks)for(const auto& effect:t.effects)
+                    if(other.targetEffectId==effect.id)return fail("Track owns an automation-targeted effect; clear the stored binding first.");
                 for(const auto& other:s.tracks) if(other.targetTrackId==id) return fail("Track is an automation target; clear the target first.");
                 const bool occupied=std::any_of(s.clips.begin(),s.clips.end(),[&](const Clip& c){return s.owner(c)==id;});
                 if(occupied && !(bool)a.getProperty("removePlacements",false)) return fail("Track contains clips; explicitly set removePlacements to remove their placements, preserving media.");
@@ -272,7 +312,9 @@ bool Document::edit(const juce::String& command,const juce::var& a,juce::String&
     Sequence checked;
     if(!Sequence::fromJson(s.toJson(),checked,error))return false;
     checked.projectId=sequence.projectId;
-    undo.beginNewTransaction(command);
+    const auto gesture=command=="effect.parameter"?a["gestureId"].toString()+a["effectId"].toString()+a["parameterId"].toString():juce::String();
+    if(a["gestureId"].toString().isEmpty() || gesture!=lastEffectGesture)undo.beginNewTransaction(command);
+    lastEffectGesture=gesture;
     return undo.perform(new Edit(*this,sequence,std::move(checked)));
 }
 }

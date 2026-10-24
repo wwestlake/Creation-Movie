@@ -1,5 +1,75 @@
 # Djehuti Movie implementation handoff
 
+## October 24 - Milestone 3: functional effects
+
+Implemented on `feature/shared-track-document`; local commit only, no merge or
+push. Station and shared sources are unchanged. See `docs/EFFECTS.md` for reuse,
+processing order, catalog, command contracts, routing limits and validation.
+
+Movie now has persistent ordered track effects, metadata-generated controls in a
+docked browser/inspector, enable/bypass, reorder/removal and transactional undo.
+Audio gain, stereo balance, track fades and low/high-pass filtering process real
+samples. Brightness, contrast, saturation, RGB balance, opacity, crop, scale and
+position process real frames. Preview and export share the production Renderer
+and effect algorithms. JUCE IIR (also used by Station), Image/Graphics transforms,
+Movie docking, worker scheduling and existing codecs are reused. Station's host
+and shared GPU nodes use different processing surfaces; neither was copied.
+
+Schema 4 persists stable effect/owner/type/parameter identities and explicit
+parameter values. Versions 2 and 3 remain readable without writing on open.
+Future automation can supply evaluated values through the same parameter map;
+automation playback/editor is deferred. Existing clip gain/opacity remain intact;
+there was no general clip chain to integrate. Effects tracks have no established
+routing semantics: insertion is rejected with an explanation, while ordinary
+compatible track chains work. No routing model was invented.
+
+Focused validation passed: Debug app/tests build, DSP/pixel/order/bypass checks,
+buffer continuity, parameter validation, undo/redo, v3/v4 persistence and existing
+v2 migration/ownership checks. Representative Debug timings: 720p colour/opacity/
+transform 58.15 ms/frame, non-neutral saturation 154.62 ms/frame; one second stereo
+48 kHz filter 1.16 ms. These are local indicative measurements, not release-mode
+performance claims. Filter output across block sizes matched exactly.
+
+Limitations: CPU 8-bit SDR processing can miss real-time frame budgets, especially
+saturation and multiple layers. Manual edits use existing renderer revision
+invalidation and are not guaranteed click-free; no smoothing is claimed. Stateful
+filters replay up to one second on seek. No GPU/proxy redesign, external plugin
+host, capture or automation runtime was introduced. Compiler shadow warnings in
+shared/UI code remain; the build is not claimed warning-free. Native pointer
+interaction remains unverified; the opt-in real-window check uses mounted JUCE
+controls and synthesized drag events.
+
+Final validation evidence:
+
+- `build/effects-build.log` and `build/effects-unit-results.log`: successful
+  single-worker Debug build and focused tests after the final DSP optimization.
+- `build/effects-check-verified/track-ui-results.json`: all 11 mounted-window
+  groups passed, including effect controls, track regression and save/reopen.
+  Saved VFS demo project: `ac6b2597587a46c4b156cdf29062d03b`. Window content was
+  inspected in `effects-ui-demo.png`; both processed exports are in that folder.
+- `effects-media-results.json`: sampled RGB difference sum 3,147,105; isolated
+  dry/processed audio RMS 0.050000/0.012597; decoded FFV1 pixel error 0; PCM maximum
+  sample error 0.000015247; active-audio filter seek error 0. MP4 starts both
+  streams at zero, with video/audio durations 4.972/4.971 seconds (AAC tolerance).
+  This checks encoded timing, not a subjective lip-sync or listening session.
+- `build/effects-regression.log`: all ten lifecycle/track groups passed,
+  including advancing playback, v2 migration, decoded audio/video equivalence,
+  MP4 export and failed-save protection. Original project restored; Movie closed
+  normally and the shared VFS service retained.
+- One earlier full-recording fixture had no useful visual difference at its
+  first frame and failed the pixel-change assertion. The final check used the
+  existing short visible excerpt. An initial lifecycle launch missed its startup
+  deadline; that instance was closed through its API before the successful run.
+
+Changed files: `CMakeLists.txt`, `HANDOFF.md`, `Source/EffectsPanel.inc`,
+`Source/MovieEffects.h/.cpp`, `Source/MovieDocument.h/.cpp`,
+`Source/MovieMedia.h/.cpp`, `Source/MovieTracks.cpp`, `Source/MainComponent.h/.cpp`,
+`Source/TrackInspector.inc`, `Source/TrackUiCheck.inc`, `tests/EffectsTests.inc`,
+`tests/MovieDocumentTests.cpp`, `scripts/Check-MovieLifecycle.py`,
+`docs/EFFECTS.md`, `docs/CAPABILITIES.md`, `docs/TRACK_DOCUMENT.md` and
+`docs/TRACK_INTERFACE.md`. Build evidence and generated media remain untracked
+ignored local artifacts; no umbrella gitlink commit was made.
+
 ## October 24 - Milestone 2: track interface
 
 Implemented on `feature/shared-track-document`, continuing Milestone 1. Local

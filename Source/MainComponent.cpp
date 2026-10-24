@@ -492,6 +492,7 @@ private:
     juce::TextButton deleteBtn { "Delete Clip" }, rippleBtn { "Ripple Delete" };
 };
 
+#include "EffectsPanel.inc"
 #include "TrackInspector.inc"
 #include "TrackUiCheck.inc"
 
@@ -576,6 +577,7 @@ MainComponent::MainComponent()
     timeline = std::make_unique<Timeline>(*this);
     inspector = std::make_unique<Inspector>(*this);
     trackInspector = std::make_unique<TrackInspector>(*this);
+    effectsPanel = std::make_unique<EffectsPanel>(*this);
     chat = std::make_unique<creation::agent::EngineerChat>(engineer);
     cards = std::make_unique<creation::agent::CardsPanel>(engineer);
 
@@ -586,6 +588,7 @@ MainComponent::MainComponent()
     dock->registerPanel("program", "Program Monitor", std::make_unique<NonOwningHost>(*monitor), Zone::CenterTab);
     dock->registerPanel("timeline", "Timeline", std::make_unique<NonOwningHost>(*timeline), Zone::Bottom);
     dock->registerPanel("track-inspector", "Track Inspector", std::make_unique<NonOwningHost>(*trackInspector), Zone::Right);
+    dock->registerPanel("effects", "Effects", std::make_unique<NonOwningHost>(*effectsPanel), Zone::Right);
     dock->registerPanel("inspector", "Inspector", std::make_unique<NonOwningHost>(*inspector), Zone::Right);
     dock->registerPanel("engineer", "Virtual Engineer", std::make_unique<NonOwningHost>(*chat), Zone::Right);
     dock->registerPanel("cards", "Cards", std::make_unique<NonOwningHost>(*cards), Zone::Right);
@@ -662,7 +665,7 @@ MainComponent::MainComponent()
     const int testArgument=arguments.indexOf("--track-ui-check");
     if(testArgument>=0 && testArgument+1<arguments.size())
         trackUiCheck=std::make_unique<TrackUiCheck>(*this,juce::File(arguments[testArgument+1].unquoted()),
-            testArgument+2<arguments.size()?juce::File(arguments[testArgument+2].unquoted()):juce::File());
+            testArgument+2<arguments.size()?juce::File(arguments[testArgument+2].unquoted()):juce::File(),arguments.contains("--effects-ui-check"));
 #endif
 }
 
@@ -856,6 +859,7 @@ MainComponent::Result MainComponent::execute(const juce::String& name, const juc
         return Result::success(state());
     if (name == "movie.jobs.get")
         return Result::success(jobs());
+    if(name=="movie.effects.catalog")return Result::success(movie::effectsCatalogJson());
     if (name == "movie.track.list")
         return Result::success(document.sequence.toJson()["tracks"]);
     if (name == "movie.track.get")
@@ -1051,6 +1055,12 @@ MainComponent::Result MainComponent::execute(const juce::String& name, const juc
             });
     }
 
+    if(name.startsWith("movie.effect."))
+    {
+        juce::String error;
+        if(!document.edit(name.fromFirstOccurrenceOf("movie.",false,false),a,error))return Result::failure("edit_rejected",error);
+        return Result::success(state());
+    }
     if(name.startsWith("movie.track."))
     {
         juce::String error;
@@ -1240,6 +1250,13 @@ void MainComponent::registerCommands()
     reg("movie.jobs.get", "Get Background Jobs", "Returns the current or most recent background media job status.",
         Effect::read, schemaObj({}));
     reg("movie.track.list", "List Tracks", "Returns tracks in display order.", Effect::read, schemaObj({}));
+    reg("movie.effects.catalog", "Effects Catalog", "Returns audio/video effect and stable parameter metadata, ranges, units, defaults and automation eligibility.",Effect::read,schemaObj({}));
+    auto effectSchema=schemaObj({{"trackId",movie::object({{"type","string"}})},{"effectId",movie::object({{"type","string"}})},
+        {"type",movie::object({{"type","string"}})},{"parameterId",movie::object({{"type","string"}})},
+        {"value",movie::object({{"type",juce::Array<juce::var>{"number","boolean"}}})},{"order",movie::object({{"type","integer"}})},
+        {"gestureId",movie::object({{"type","string"}})}},{"trackId"});
+    for(const auto* action:{"add","remove","reorder","parameter","enabled","bypass"})
+        reg("movie.effect."+juce::String(action),"Effect "+juce::String(action),"Undoable track effect operation using stable owner/effect/parameter identities.",Effect::write,effectSchema);
     reg("movie.track.get", "Get Track", "Returns a track by stable identity.", Effect::read,
         schemaObj({{"trackId",movie::object({{"type","string"}})}},{"trackId"}));
     auto trackSchema=schemaObj({
@@ -1405,6 +1422,7 @@ void MainComponent::changed()
     if(document.sequence.findTrack(selectedTrack)<0)
         selectedTrack=document.sequence.tracks.empty()?juce::String():document.sequence.tracks.front().id;
     if(trackInspector)trackInspector->sync();
+    if(effectsPanel)effectsPanel->sync();
     if(timeline)timeline->sync();
     playback.setSequence(document.sequence);
     lastPreviewTime = -1.0;
@@ -1446,6 +1464,7 @@ void MainComponent::selectClip(const juce::String& id)
     const int selectedIndex=document.sequence.findClip(id);
     if(selectedIndex>=0)selectedTrack=document.sequence.owner(document.sequence.clips[(size_t)selectedIndex]);
     if(trackInspector)trackInspector->sync();
+    if(effectsPanel)effectsPanel->sync();
     if (inspector)
         inspector->syncFromSelection();
     if (timeline)
@@ -1769,6 +1788,7 @@ juce::PopupMenu MainComponent::getMenuForIndex(int, const juce::String& menuName
         m.addItem(35, "Virtual Engineer");
         m.addItem(36, "Cards");
         m.addItem(38, "Track Inspector");
+        m.addItem(39, "Effects Browser / Inspector");
         m.addSeparator();
         m.addItem(37, "Reset Workspace Layout");
     }
@@ -1805,6 +1825,7 @@ void MainComponent::menuItemSelected(int id, int)
         case 35: if (dock) dock->activatePanel("engineer"); break;
         case 36: if (dock) dock->activatePanel("cards"); break;
         case 38: if (dock) dock->activatePanel("track-inspector"); break;
+        case 39: if (dock) dock->activatePanel("effects"); break;
         case 37: if (dock) dock->resetLayout(); break;
         case 40: showHelp(); break;
         default: break;

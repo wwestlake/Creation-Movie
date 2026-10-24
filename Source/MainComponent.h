@@ -17,7 +17,7 @@ public:
     bool keyPressed(const juce::KeyPress&)override;
     void requestQuit();
 private:
-    class Library;class Monitor;class Timeline;class Inspector;class TrackInspector;
+    class Library;class Monitor;class Timeline;class Inspector;class TrackInspector;class EffectsPanel;
     struct Job
     {
         // Message-thread fields. Workers may access only progress and cancel.
@@ -64,6 +64,7 @@ private:
     std::unique_ptr<Library> library;std::unique_ptr<Monitor> monitor,sourceMonitor;
     std::unique_ptr<Timeline> timeline;std::unique_ptr<Inspector> inspector;
     std::unique_ptr<TrackInspector> trackInspector;
+    std::unique_ptr<EffectsPanel> effectsPanel;
     std::unique_ptr<creation::agent::EngineerChat> chat;
     std::unique_ptr<creation::agent::CardsPanel> cards;
     std::unique_ptr<CreationDock::DockManager> dock;

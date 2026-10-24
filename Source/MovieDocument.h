@@ -3,6 +3,7 @@
 #include <juce_data_structures/juce_data_structures.h>
 #include <functional>
 #include <map>
+#include "MovieEffects.h"
 
 namespace movie
 {
@@ -31,6 +32,7 @@ struct Track : creation::timeline::TimelineTrack
     juce::var source;
     juce::String targetTrackId, targetClipId, targetEffectId, parameterId;
     std::vector<creation::timeline::AutomationPoint> points;
+    std::vector<Effect> effects;
     juce::var toJson() const;
     static bool fromJson(const juce::var&, Track&, juce::String&);
 };
@@ -71,6 +73,7 @@ public:
     void restore(const juce::var&);
 private:
     struct Edit;
+    juce::String lastEffectGesture;
 };
 juce::var object(std::initializer_list<std::pair<juce::Identifier, juce::var>> fields);
 bool finiteNumber(const juce::var& value);
