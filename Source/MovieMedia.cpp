@@ -242,7 +242,16 @@ void MediaReader::audioAt(double seconds,int samples,int rate,float* output)
     }
 }
 
-Renderer::Renderer(Sequence s,std::atomic<bool>* c):sequence(std::move(s)),cancel(c){}
+Renderer::Renderer(Sequence s,std::atomic<bool>* c):sequence(std::move(s)),cancel(c)
+{
+    sequence.resolveTrackIndices();trackClips.resize(sequence.tracks.size());spans.resize(sequence.tracks.size(),{1.0e30,0});audioEffects.resize(sequence.tracks.size());
+    for(size_t i=0;i<sequence.clips.size();++i)
+    {
+        const auto& clip=sequence.clips[i];if(clip.trackIndex<0)continue;
+        const auto ti=(size_t)clip.trackIndex;trackClips[ti].push_back(i);
+        spans[ti].first=std::min(spans[ti].first,clip.startSeconds);spans[ti].second=std::max(spans[ti].second,clip.startSeconds+clip.durationSeconds);
+    }
+}
 MediaReader& Renderer::reader(const Media& m,bool audio)
 {
     const auto key=m.id+(audio?"/a":"/v");auto found=readers.find(key);
@@ -255,44 +264,72 @@ MediaReader& Renderer::reader(const Media& m,bool audio)
 }
 juce::Image Renderer::video(double seconds,int width,int height)
 {
-    juce::Image output(juce::Image::ARGB,width,height,true);juce::Graphics g(output);g.fillAll(juce::Colours::black);
-    std::vector<const Clip*> active;
-    for(const auto& c:sequence.clips)if(seconds+1e-8>=c.startSeconds && seconds<c.startSeconds+c.durationSeconds-1e-8)active.push_back(&c);
-    std::stable_sort(active.begin(),active.end(),[](auto* a,auto* b){return a->trackIndex<b->trackIndex;});
-    for(auto* c:active)
+    juce::Image output(juce::Image::ARGB,width,height,true);juce::Graphics composite(output);composite.fillAll(juce::Colours::black);
+    for(size_t ti=0;ti<sequence.tracks.size();++ti)
     {
-        if(cancel && cancel->load())throw std::runtime_error("Cancelled");
-        g.setOpacity((float)(double)c->videoParams.getWithDefault("opacity",1.0));
-        auto title=c->videoParams["title"].toString();
-        if(title.isNotEmpty())
+        const auto& track=sequence.tracks[ti];if(!track.enabled)continue;
+        const bool processing=std::any_of(track.effects.begin(),track.effects.end(),[](const Effect& e){return e.enabled && !e.bypassed && e.type.startsWith("video.");});
+        juce::Image layer;if(processing)layer=juce::Image(juce::Image::ARGB,width,height,true);
+        std::unique_ptr<juce::Graphics> layerGraphics;if(processing)layerGraphics=std::make_unique<juce::Graphics>(layer);
+        auto& g=processing?*layerGraphics:composite;
+        for(const auto index:trackClips[ti])
         {
-            const auto box=juce::Rectangle<int>(width/16,height*3/4,width*7/8,height/5);
-            g.setColour(juce::Colours::black.withAlpha(0.65f));g.fillRoundedRectangle(box.toFloat(),(float)height/80);
-            g.setColour(juce::Colours::white);g.setFont(juce::FontOptions((float)height/18,juce::Font::bold));
-            g.drawFittedText(title,box.reduced(width/40),juce::Justification::centred,3);continue;
+            const auto& c=sequence.clips[index];if(seconds+1e-8<c.startSeconds || seconds>=c.startSeconds+c.durationSeconds-1e-8)continue;
+            if(cancel && cancel->load())throw std::runtime_error("Cancelled");
+            g.setOpacity((float)(double)c.videoParams.getWithDefault("opacity",1.0));
+            auto title=c.videoParams["title"].toString();
+            if(title.isNotEmpty())
+            {
+                const auto box=juce::Rectangle<int>(width/16,height*3/4,width*7/8,height/5);
+                g.setColour(juce::Colours::black.withAlpha(0.65f));g.fillRoundedRectangle(box.toFloat(),(float)height/80);
+                g.setColour(juce::Colours::white);g.setFont(juce::FontOptions((float)height/18,juce::Font::bold));
+                g.drawFittedText(title,box.reduced(width/40),juce::Justification::centred,3);continue;
+            }
+            const auto* m=sequence.findMedia(c.assetId);if(!m || !m->info.hasVideo)continue;
+            const auto image=reader(*m,false).videoAt(m->info.still?0:c.sourceStartSeconds+seconds-c.startSeconds,width,height);
+            if(image.isValid())g.drawImageWithin(image,0,0,width,height,juce::RectanglePlacement::centred,false);
         }
-        const auto* m=sequence.findMedia(c->assetId);if(!m || !m->info.hasVideo)continue;
-        const auto image=reader(*m,false).videoAt(m->info.still?0:c->sourceStartSeconds+seconds-c->startSeconds,width,height);
-        if(image.isValid())g.drawImageWithin(image,0,0,width,height,juce::RectanglePlacement::centred,false);
+        if(processing){layerGraphics.reset();processVideoEffects(layer,track.effects);composite.setOpacity(1);composite.drawImageAt(layer,0,0);}
     }
     return output;
 }
+void Renderer::audioBlock(double seconds,int samples,int rate,float* output)
+{
+    std::fill(output,output+samples*2,0.0f);scratch.resize((size_t)samples*2);trackBuffer.resize((size_t)samples*2);
+    for(size_t ti=0;ti<sequence.tracks.size();++ti)
+    {
+        const auto& track=sequence.tracks[ti];if(!track.enabled)continue;
+        if(cancel && cancel->load())throw std::runtime_error("Cancelled");
+        std::fill(trackBuffer.begin(),trackBuffer.end(),0.0f);
+        for(const auto index:trackClips[ti])
+        {
+            const auto& c=sequence.clips[index];auto* m=sequence.findMedia(c.assetId);if(!m || !m->info.hasAudio || c.soundDetached)continue;
+            const auto from=std::max(seconds,c.startSeconds),to=std::min(seconds+(double)samples/rate,c.startSeconds+c.durationSeconds);
+            if(to<=from)continue;
+            const int offset=juce::jlimit(0,samples,(int)std::llround((from-seconds)*rate));
+            const int n=juce::jlimit(0,samples-offset,(int)std::llround((to-from)*rate));if(n==0)continue;
+            reader(*m,true).audioAt(c.sourceStartSeconds+from-c.startSeconds,n,rate,scratch.data());
+            const float gain=(float)(double)c.videoParams.getWithDefault("gain",1.0);
+            for(int i=0;i<n*2;++i)trackBuffer[(size_t)offset*2+i]+=scratch[(size_t)i]*gain;
+        }
+        audioEffects[ti].process(trackBuffer.data(),samples,rate,seconds-spans[ti].first,spans[ti].second-spans[ti].first,track.effects);
+        for(int i=0;i<samples*2;++i)output[i]+=trackBuffer[(size_t)i];
+    }
+    for(int i=0;i<samples*2;++i)output[i]=juce::jlimit(-1.0f,1.0f,output[i]);
+}
 void Renderer::audio(double seconds,int samples,int rate,float* output)
 {
-    std::fill(output,output+samples*2,0.0f);std::vector<float> scratch((size_t)samples*2);
-    for(const auto& c:sequence.clips)
+    if(rate!=audioRate || std::abs(seconds-nextAudioTime)>.25/rate)
     {
-        auto* m=sequence.findMedia(c.assetId);if(!m || !m->info.hasAudio || c.soundDetached)continue;
-        const auto from=std::max(seconds,c.startSeconds),to=std::min(seconds+(double)samples/rate,c.startSeconds+c.durationSeconds);
-        if(to<=from)continue;
-        const int offset=juce::jlimit(0,samples,(int)std::llround((from-seconds)*rate));
-        const int n=juce::jlimit(0,samples-offset,(int)std::llround((to-from)*rate));
-        if(n==0)continue;
-        reader(*m,true).audioAt(c.sourceStartSeconds+from-c.startSeconds,n,rate,scratch.data());
-        const float gain=(float)(double)c.videoParams.getWithDefault("gain",1.0);
-        for(int i=0;i<n*2;++i)output[offset*2+i]+=scratch[(size_t)i]*gain;
+        for(auto& state:audioEffects)state.reset();
+        bool filtered=false;
+        for(const auto& t:sequence.tracks)if(t.enabled)for(const auto& e:t.effects)filtered|=e.enabled && !e.bypassed && e.type=="audio.filter";
+        if(filtered && seconds>0)
+        {
+            discard.resize(2048);const int64_t end=std::llround(seconds*rate);int64_t sample=std::max<int64_t>(0,end-rate);
+            while(sample<end){const int n=(int)std::min<int64_t>(1024,end-sample);audioBlock((double)sample/rate,n,rate,discard.data());sample+=n;}
+        }
     }
-    // Explicit hard output ceiling, with unclipped edit gains retained in the model.
-    for(int i=0;i<samples*2;++i)output[i]=juce::jlimit(-1.0f,1.0f,output[i]);
+    audioBlock(seconds,samples,rate,output);audioRate=rate;nextAudioTime=seconds+(double)samples/rate;
 }
 }

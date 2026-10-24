@@ -17,7 +17,7 @@ public:
     bool keyPressed(const juce::KeyPress&)override;
     void requestQuit();
 private:
-    class Library;class Monitor;class Timeline;class Inspector;
+    class Library;class Monitor;class Timeline;class Inspector;class TrackInspector;class EffectsPanel;
     struct Job
     {
         // Message-thread fields. Workers may access only progress and cancel.
@@ -31,6 +31,16 @@ private:
     void registerCommands();void runUi(const juce::String&,const juce::var& = movie::object({}));
     void confirmProjectChange(const juce::String&, const juce::var&);
     void changed();void refresh();void selectClip(const juce::String&);void selectMedia(const juce::String&);
+    void selectTrack(const juce::String&, bool showInspector=true);
+    void addTrackMenu(juce::Component*);
+    void trackMenu(const juce::String&, juce::Point<int>);
+    void removeTrack(const juce::String&);
+    void renameTrack();
+    void createTrack(const juce::String&);
+#if JUCE_DEBUG
+    class TrackUiCheck;
+    std::unique_ptr<TrackUiCheck> trackUiCheck;
+#endif
     juce::var state()const;juce::var jobs()const;
     void chooseImport();void chooseExport();void newProjectDialog();void openProjectMenu();void titleDialog();void showSettings();void showHelp();
     void warn(const juce::String&);void timerCallback()override;
@@ -53,12 +63,14 @@ private:
     juce::Slider zoom;
     std::unique_ptr<Library> library;std::unique_ptr<Monitor> monitor,sourceMonitor;
     std::unique_ptr<Timeline> timeline;std::unique_ptr<Inspector> inspector;
+    std::unique_ptr<TrackInspector> trackInspector;
+    std::unique_ptr<EffectsPanel> effectsPanel;
     std::unique_ptr<creation::agent::EngineerChat> chat;
     std::unique_ptr<creation::agent::CardsPanel> cards;
     std::unique_ptr<CreationDock::DockManager> dock;
     std::unique_ptr<juce::FileChooser> chooser;
     std::unique_ptr<juce::DocumentWindow> settingsWindow,helpWindow;
-    juce::String selectedClip,selectedMedia,lastStatus;
+    juce::String selectedClip,selectedMedia,selectedTrack,lastStatus;
     double visibleStart=0,pixelsPerSecond=35,lastPreviewTime=-1;
     std::shared_ptr<Job> job=std::make_shared<Job>();std::thread worker;
     bool closing=false,quitAfterSave=false;int autosaveTicks=0;

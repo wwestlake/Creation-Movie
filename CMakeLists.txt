@@ -113,7 +113,14 @@ target_sources(CreationMovieApp PRIVATE
     Source/Main.cpp
     Source/MainComponent.cpp
     Source/MainComponent.h
+    Source/TrackTimeline.inc
+    Source/TrackInspector.inc
+    Source/TrackUiCheck.inc
+    Source/EffectsPanel.inc
     Source/MovieDocument.cpp
+    Source/MovieTracks.cpp
+    Source/MovieEffects.cpp
+    Source/MovieEffects.h
     Source/MovieDocument.h
     Source/MovieMedia.cpp
     Source/MovieMedia.h
@@ -175,3 +182,10 @@ set(CPACK_PACKAGE_EXECUTABLES "Djehuti Movie" "Djehuti Movie")
 set(CPACK_CREATE_DESKTOP_LINKS "Djehuti Movie")
 
 include(CPack)
+
+add_executable(MovieDocumentTests tests/MovieDocumentTests.cpp Source/MovieDocument.cpp Source/MovieTracks.cpp Source/MovieEffects.cpp)
+target_include_directories(MovieDocumentTests PRIVATE Source)
+target_link_libraries(MovieDocumentTests PRIVATE creation_suite_timeline juce::juce_data_structures juce::juce_audio_basics juce::juce_gui_basics)
+target_compile_definitions(MovieDocumentTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+enable_testing()
+add_test(NAME movie_document_tracks COMMAND MovieDocumentTests)

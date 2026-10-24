@@ -30,9 +30,15 @@ public:
     void audio(double seconds,int samples,int rate,float* stereo);
 private:
     MediaReader& reader(const Media&,bool audio);
+    void audioBlock(double,int,int,float*);
     Sequence sequence;
     std::atomic<bool>* cancel;
     std::map<juce::String,std::unique_ptr<MediaReader>> readers;
+    std::vector<std::vector<size_t>> trackClips;
+    std::vector<std::pair<double,double>> spans;
+    std::vector<AudioEffects> audioEffects;
+    std::vector<float> scratch,trackBuffer,discard;
+    double nextAudioTime=-1;int audioRate=0;
 };
 
 struct ExportOptions { juce::File destination; juce::String preset {"mp4"}; int width=0,height=0; bool overwrite=false; };
