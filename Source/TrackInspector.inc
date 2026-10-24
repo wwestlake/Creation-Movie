@@ -1,0 +1,221 @@
+class MainComponent::TrackInspector final : public juce::Component
+{
+public:
+#if JUCE_DEBUG
+    friend class MainComponent::TrackUiCheck;
+#endif
+    explicit TrackInspector(MainComponent& o):owner(o)
+    {
+        addAndMakeVisible(view);view.setViewedComponent(&form,false);view.setScrollBarsShown(true,false);
+        for(auto* c:std::initializer_list<juce::Component*>{&heading,&nameLabel,&name,&typeLabel,&type,&enabled,&armed,&monitor,
+            &heightLabel,&height,&sourceLabel,&category,&media,&identity,&settingsLabel,&widthLabel,&pixelsLabel,&fpsLabel,&rateLabel,&channelsLabel,&width,&pixels,&fps,&rate,&channels,&applySource,&clearSource,&note,&automation,&remove})form.addAndMakeVisible(c);
+        heading.setText("Track Inspector",juce::dontSendNotification);
+        nameLabel.setText("Name",juce::dontSendNotification);typeLabel.setText("Type",juce::dontSendNotification);
+        heightLabel.setText("Lane height",juce::dontSendNotification);sourceLabel.setText("Source",juce::dontSendNotification);
+        settingsLabel.setText("Requested format (optional)",juce::dontSendNotification);
+        widthLabel.setText("Width (pixels)",juce::dontSendNotification);pixelsLabel.setText("Height (pixels)",juce::dontSendNotification);
+        fpsLabel.setText("Frame rate numerator",juce::dontSendNotification);rateLabel.setText("Sample rate (Hz)",juce::dontSendNotification);channelsLabel.setText("Channels",juce::dontSendNotification);
+        for(const auto* token:{"video","audio","image","effects","automation"})type.addItem(juce::String(token).toUpperCase(),type.getNumItems()+1);
+        height.addItem("Compact / 64",64);height.addItem("Standard / 100",100);height.addItem("Large / 140",140);height.addItem("Extra large / 200",200);
+        name.setName("Track name");type.setName("Track type");category.setName("Track source category");media.setName("Project media source");
+        identity.setName("Saved source label");identity.setTextToShowWhenEmpty("Saved device or window label",juce::Colours::grey);
+        auto field=[](juce::TextEditor& e,const char* label){e.setName(label);e.setTextToShowWhenEmpty(label,juce::Colours::grey);e.setInputRestrictions(7,"0123456789");};
+        field(width,"Width");field(pixels,"Height");field(fps,"Frames / sec");field(rate,"Samples / sec");field(channels,"Channels");
+        name.onReturnKey=[this]{rename();};name.onFocusLost=[this]{rename();};
+        type.onChange=[this]{if(!syncing)mutate("type",movie::object({{"type",types[(size_t)(type.getSelectedId()-1)]}}));};
+        enabled.onClick=[this]{mutate("enabled",movie::object({{"enabled",enabled.getToggleState()}}));};
+        armed.onClick=[this]{mutate("preferences",movie::object({{"armed",armed.getToggleState()}}));};
+        monitor.onClick=[this]{mutate("preferences",movie::object({{"monitoring",monitor.getToggleState()}}));};
+        height.onChange=[this]{if(!syncing)mutate("preferences",movie::object({{"height",height.getSelectedId()}}));};
+        category.onChange=[this]{if(!syncing){populateMedia();layout();}};
+        applySource.onClick=[this]{saveSource();};clearSource.onClick=[this]{mutate("source",movie::object({{"source",juce::var()}}));};
+        remove.onClick=[this]{owner.removeTrack(owner.selectedTrack);};
+        note.setJustificationType(juce::Justification::topLeft);automation.setJustificationType(juce::Justification::topLeft);
+    }
+    void sync()
+    {
+        syncing=true;
+        const int index=owner.document.sequence.findTrack(owner.selectedTrack);
+        valid=index>=0;
+        if(valid)
+        {
+            const auto& t=owner.document.sequence.tracks[(size_t)index];
+            trackId=t.id;
+            name.setText(t.name,false);type.setSelectedId((int)(std::find(types.begin(),types.end(),t.type)-types.begin())+1,juce::dontSendNotification);
+            enabled.setToggleState(t.enabled,juce::dontSendNotification);armed.setToggleState(t.armed,juce::dontSendNotification);monitor.setToggleState(t.monitoring,juce::dontSendNotification);
+            height.setSelectedId(t.heightPixels,juce::dontSendNotification);
+            if(height.getSelectedId()==0){height.addItem("Custom / "+juce::String(t.heightPixels),t.heightPixels);height.setSelectedId(t.heightPixels,juce::dontSendNotification);}
+            category.clear(juce::dontSendNotification);categories.clear();
+            auto add=[&](const char* key,const char* label){categories.push_back(key);category.addItem(label,(int)categories.size());};
+            add("none","No source assigned");
+            if(t.type=="video" || t.type=="audio" || t.type=="image")add("media","Imported project media");
+            if(t.type=="video"){add("display","Display ... saved configuration only");add("window","Window ... saved configuration only");add("camera","Camera ... saved configuration only");}
+            if(t.type=="audio"){add("microphone","Microphone ... saved configuration only");add("systemAudio","System audio ... saved configuration only");}
+            const auto token=t.source["category"].toString();
+            auto found=std::find(categories.begin(),categories.end(),token);
+            category.setSelectedId(found==categories.end()?1:(int)(found-categories.begin())+1,juce::dontSendNotification);
+            identity.setText(t.source["identity"].toString(),false);
+            populateMedia();
+            for(size_t i=0;i<mediaIds.size();++i)if(mediaIds[i]==t.source["identity"].toString())media.setSelectedId((int)i+1,juce::dontSendNotification);
+            auto setting=[&](juce::TextEditor& e,const char* key){e.setText(t.source["settings"].hasProperty(key)?t.source["settings"][key].toString():juce::String(),false);};
+            setting(width,"width");setting(pixels,"height");setting(fps,"fpsNum");setting(rate,"sampleRate");setting(channels,"channels");
+            juce::String target="No target stored";
+            if(t.targetTrackId.isNotEmpty())
+            {
+                const int ti=owner.document.sequence.findTrack(t.targetTrackId);
+                target=ti>=0?owner.document.sequence.tracks[(size_t)ti].name:"Unavailable track";
+            }
+            if(t.targetClipId.isNotEmpty())
+            {
+                const int ci=owner.document.sequence.findClip(t.targetClipId);
+                if(ci>=0)target+=" / "+owner.document.sequence.clips[(size_t)ci].displayName;
+            }
+            if(t.targetEffectId.isNotEmpty())target+=" / stored effect";
+            if(t.parameterId.isNotEmpty())target+=" / "+t.parameterId;
+            automation.setText("Stored target: "+target+"\n"+juce::String(t.points.size())+" curve points\nAutomation playback and curve editing are not available yet.",juce::dontSendNotification);
+            heading.setText(t.legacyMixed?"Track Inspector / legacy mixed media":"Track Inspector",juce::dontSendNotification);
+        }
+        else {trackId={};heading.setText("Select a track to configure it",juce::dontSendNotification);}
+        syncing=false;layout();repaint();
+    }
+    void paint(juce::Graphics& g)override{g.fillAll(creation_movie::branding::panelColour());}
+    void resized()override{view.setBounds(getLocalBounds());layout();}
+private:
+    juce::String selectedCategory()const
+    {
+        const int i=category.getSelectedId()-1;return juce::isPositiveAndBelow(i,(int)categories.size())?categories[(size_t)i]:"none";
+    }
+    void layout()
+    {
+        const int w=std::max(190,view.getMaximumVisibleWidth()-20);int y=8;
+        auto row=[&](juce::Component& c,int h=26){c.setBounds(10,y,w,h);y+=h+5;};
+        row(heading,32);
+        for(auto* c:std::initializer_list<juce::Component*>{&nameLabel,&name,&typeLabel,&type,&enabled,&armed,&monitor,&heightLabel,&height,&sourceLabel,&category,&media,&identity,&settingsLabel,&widthLabel,&pixelsLabel,&fpsLabel,&rateLabel,&channelsLabel,&width,&pixels,&fps,&rate,&channels,&applySource,&clearSource,&note,&automation,&remove})c->setVisible(valid);
+        if(!valid){form.setSize(w+20,std::max(70,view.getHeight()));return;}
+        const int i=owner.document.sequence.findTrack(owner.selectedTrack);if(i<0)return;
+        const auto& t=owner.document.sequence.tracks[(size_t)i];const bool av=t.type=="video" || t.type=="audio";
+        row(nameLabel,18);row(name);row(typeLabel,18);row(type);row(enabled);
+        armed.setVisible(av);monitor.setVisible(av);if(av){row(armed);row(monitor);}
+        row(heightLabel,18);row(height);
+        const bool sources=av || t.type=="image";
+        sourceLabel.setVisible(sources);category.setVisible(sources);applySource.setVisible(sources);clearSource.setVisible(sources);
+        if(sources){row(sourceLabel,18);row(category);}
+        const auto cat=selectedCategory();const bool live=cat!="none" && cat!="media";
+        media.setVisible(sources && cat=="media");identity.setVisible(sources && live);
+        if(sources && cat=="media")row(media);
+        if(sources && live)row(identity);
+        const bool videoSettings=live && t.type=="video",audioSettings=live && t.type=="audio";
+        widthLabel.setVisible(valid && videoSettings);pixelsLabel.setVisible(valid && videoSettings);fpsLabel.setVisible(valid && videoSettings);rateLabel.setVisible(valid && audioSettings);channelsLabel.setVisible(valid && audioSettings);
+        settingsLabel.setVisible(live);width.setVisible(videoSettings);pixels.setVisible(videoSettings);fps.setVisible(videoSettings);rate.setVisible(audioSettings);channels.setVisible(audioSettings);
+        if(live)row(settingsLabel,20);
+        if(videoSettings){row(widthLabel,18);row(width);row(pixelsLabel,18);row(pixels);row(fpsLabel,18);row(fps);}
+        if(audioSettings){row(rateLabel,18);row(rate);row(channelsLabel,18);row(channels);}
+        if(sources){row(applySource);row(clearSource);}
+        note.setText(live?"Configuration only. No live device discovery, capture or monitoring is active.":t.type=="effects"?"Effects track: processing is not available yet.":"Source changes keep existing clips. Arm and Monitor are saved preferences only.",juce::dontSendNotification);
+        row(note,68);automation.setVisible(t.type=="automation");if(t.type=="automation")row(automation,100);
+        row(remove);form.setSize(w+20,std::max(y,view.getHeight()));
+    }
+    void populateMedia()
+    {
+        media.clear(juce::dontSendNotification);mediaIds.clear();
+        const int i=owner.document.sequence.findTrack(owner.selectedTrack);if(i<0)return;
+        const auto& typeToken=owner.document.sequence.tracks[(size_t)i].type;
+        for(const auto& m:owner.document.sequence.media)
+            if((typeToken=="video" && m.info.hasVideo) || (typeToken=="audio" && m.info.hasAudio) || (typeToken=="image" && m.info.still))
+            {mediaIds.push_back(m.id);media.addItem(m.name,(int)mediaIds.size());}
+        media.setTextWhenNothingSelected(mediaIds.empty()?"Import compatible media first":"Choose project media...");
+    }
+    void rename()
+    {
+        const int i=owner.document.sequence.findTrack(trackId);
+        if(!syncing && i>=0 && name.getText()!=owner.document.sequence.tracks[(size_t)i].name)mutate("rename",movie::object({{"name",name.getText()}}));
+    }
+    void mutate(const char* operation,juce::var a)
+    {
+        if(syncing || trackId.isEmpty())return;
+        a.getDynamicObject()->setProperty("trackId",trackId);owner.runUi("movie.track."+juce::String(operation),a);sync();
+    }
+    void saveSource()
+    {
+        const auto cat=selectedCategory();
+        if(cat=="none"){mutate("source",movie::object({{"source",juce::var()}}));return;}
+        juce::String id=identity.getText().trim();
+        if(cat=="media")
+        {
+            const int mi=media.getSelectedId()-1;
+            if(!juce::isPositiveAndBelow(mi,(int)mediaIds.size())){owner.warn("Choose compatible project media first.");return;}
+            id=mediaIds[(size_t)mi];
+        }
+        if(id.isEmpty()){owner.warn("Enter a label for the saved source configuration.");return;}
+        auto settings=movie::object({});
+        const int ti=owner.document.sequence.findTrack(trackId);
+        if(ti>=0 && owner.document.sequence.tracks[(size_t)ti].source["category"].toString()==cat
+            && owner.document.sequence.tracks[(size_t)ti].source["settings"].isObject())settings=owner.document.sequence.tracks[(size_t)ti].source["settings"].clone();
+        auto put=[&](juce::TextEditor& e,const char* key){settings.getDynamicObject()->removeProperty(key);if(e.isVisible() && e.getText().isNotEmpty())settings.getDynamicObject()->setProperty(key,e.getText().getIntValue());};
+        put(width,"width");put(pixels,"height");put(fps,"fpsNum");put(rate,"sampleRate");put(channels,"channels");
+        if(fps.isVisible() && fps.getText().isNotEmpty() && (ti<0 || fps.getText()!=owner.document.sequence.tracks[(size_t)ti].source["settings"]["fpsNum"].toString()))
+            settings.getDynamicObject()->setProperty("fpsDen",1);
+        mutate("source",movie::object({{"source",movie::object({{"category",cat},{"identity",id},{"settings",settings}})}}));
+    }
+    MainComponent& owner;juce::Viewport view;juce::Component form;bool syncing=false,valid=false;juce::String trackId;
+    std::vector<juce::String> types{"video","audio","image","effects","automation"},categories,mediaIds;
+    juce::Label heading,nameLabel,typeLabel,heightLabel,sourceLabel,settingsLabel,note,automation,widthLabel,pixelsLabel,fpsLabel,rateLabel,channelsLabel;
+    juce::TextEditor name,identity,width,pixels,fps,rate,channels;
+    juce::ComboBox type,height,category,media;
+    juce::ToggleButton enabled{"Enabled"},armed{"Arm preference (no recording)"},monitor{"Monitor preference (inactive)"};
+    juce::TextButton applySource{"Apply Source"},clearSource{"Clear Source"},remove{"Remove Track..."};
+};
+void MainComponent::selectTrack(const juce::String& id,bool showInspector)
+{
+    if(document.sequence.findTrack(id)<0)return;
+    selectedTrack=id;selectedClip={};
+    if(trackInspector)trackInspector->sync();
+    if(inspector)inspector->syncFromSelection();
+    if(showInspector && dock)dock->activatePanel("track-inspector");
+    if(timeline)timeline->repaint();
+}
+void MainComponent::renameTrack(){if(timeline)timeline->beginRename();}
+void MainComponent::addTrackMenu(juce::Component* button)
+{
+    juce::PopupMenu m;int i=0;
+    for(const auto* type:{"Video","Audio","Image","Effects","Automation"})m.addItem(++i,type);
+    const juce::Component::SafePointer<MainComponent> safe(this);
+    m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(button),[safe](int choice){
+        if(!safe || choice<1 || choice>5)return;
+        static const char* types[]{"video","audio","image","effects","automation"};
+        safe->createTrack(types[choice-1]);
+    });
+}
+void MainComponent::createTrack(const juce::String& type)
+{
+    const auto count=document.sequence.tracks.size();
+    runUi("movie.track.create",movie::object({{"type",type}}));
+    if(document.sequence.tracks.size()>count)selectTrack(document.sequence.tracks.back().id);
+}
+void MainComponent::removeTrack(const juce::String& id)
+{
+    const int i=document.sequence.findTrack(id);if(i<0)return;
+    const auto& t=document.sequence.tracks[(size_t)i];
+    const bool occupied=std::any_of(document.sequence.clips.begin(),document.sequence.clips.end(),[&](const movie::Clip& c){return document.sequence.owner(c)==id;});
+    const bool configured=!t.source.isVoid() || t.armed || t.monitoring || !t.points.empty() || t.targetTrackId.isNotEmpty() || t.targetClipId.isNotEmpty() || t.targetEffectId.isNotEmpty() || t.parameterId.isNotEmpty();
+    if(!occupied && !configured){runUi("movie.track.remove",movie::object({{"trackId",id}}));return;}
+    const juce::Component::SafePointer<MainComponent> safe(this);
+    juce::AlertWindow::showOkCancelBox(juce::MessageBoxIconType::WarningIcon,"Remove "+t.name+"?",
+        "Remove this track, its configuration and its timeline placements? Imported media will be kept. You can undo this operation.","Remove Track","Cancel",this,
+        juce::ModalCallbackFunction::create([safe,id](int result){if(safe && result==1)safe->runUi("movie.track.remove",movie::object({{"trackId",id},{"removePlacements",true}}));}));
+}
+void MainComponent::trackMenu(const juce::String& id,juce::Point<int> point)
+{
+    const int i=document.sequence.findTrack(id);if(i<0)return;
+    juce::PopupMenu m;m.addItem(1,"Rename Track...");m.addItem(2,"Track Settings...");m.addItem(3,"Enabled",true,document.sequence.tracks[(size_t)i].enabled);
+    m.addSeparator();m.addItem(4,"Move Up",i>0);m.addItem(5,"Move Down",i+1<(int)document.sequence.tracks.size());m.addSeparator();m.addItem(6,"Remove Track...");
+    const juce::Component::SafePointer<MainComponent> safe(this);
+    m.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea({point.x,point.y,1,1}),[safe,id](int choice){
+        if(!safe)return;const int index=safe->document.sequence.findTrack(id);if(index<0)return;
+        if(choice==1){safe->selectTrack(id,false);safe->renameTrack();}
+        if(choice==2)safe->selectTrack(id);
+        if(choice==3)safe->runUi("movie.track.enabled",movie::object({{"trackId",id},{"enabled",!safe->document.sequence.tracks[(size_t)index].enabled}}));
+        if(choice==4 || choice==5)safe->runUi("movie.track.reorder",movie::object({{"trackId",id},{"order",index+(choice==4?-1:1)}}));
+        if(choice==6)safe->removeTrack(id);
+    });
+}

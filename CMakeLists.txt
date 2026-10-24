@@ -113,6 +113,9 @@ target_sources(CreationMovieApp PRIVATE
     Source/Main.cpp
     Source/MainComponent.cpp
     Source/MainComponent.h
+    Source/TrackTimeline.inc
+    Source/TrackInspector.inc
+    Source/TrackUiCheck.inc
     Source/MovieDocument.cpp
     Source/MovieTracks.cpp
     Source/MovieDocument.h

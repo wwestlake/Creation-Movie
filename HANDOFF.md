@@ -1,5 +1,65 @@
 # Djehuti Movie implementation handoff
 
+## October 24 - Milestone 2: track interface
+
+Implemented on `feature/shared-track-document`, continuing Milestone 1. Local
+commit only; no merge/push or umbrella gitlink commit. See
+`docs/TRACK_INTERFACE.md` for user interactions and the opt-in GUI check.
+
+The previous interface only painted track names/order. It now provides Add Track
+with all five types, header selection, inline/inspector rename, header drag and
+menu/keyboard reorder, enable state, arm/monitor preferences, safe removal and a
+docked scrollable Track Inspector. Headers and clips share document-derived lane
+heights and a vertical scroll offset. Library placement uses the selected stable
+track identity. Sources use compatible project-media choices or explicitly
+inactive saved live-source configurations; automation shows stored target names
+and point count without evaluation or a curve editor.
+
+Station's TrackerPanel was inspected but is not an independent shared UI widget:
+it depends on Station's timeline/audio integration. No Station panel was copied.
+Existing shared track/automation structures, Movie document commands, docking,
+JUCE controls and popup conventions are reused. No shared/Station or media-engine
+source changed. No schema change was needed.
+
+Validation:
+
+- Single-worker Debug application build passed (`build/track-ui-build.log`).
+  Shadow warnings remain in the shared header and UI/check locals; this is not
+  a zero-warning claim.
+- Existing MovieDocumentTests passed (migration, commands, ownership, undo/redo,
+  sources, automation persistence and atomic failure).
+- The opt-in Debug GUI check ran the actual mounted application window. Eight
+  groups passed: empty state; five types/type-specific inspector; name/enable/
+  preferences/source/height controls; synthesized header-drag events and undo;
+  inline rename/scroll alignment; removal/undo/redo; Library placement of real
+  video plus generated WAV/PNG on selected tracks; identical VFS save/reopen.
+- Final GUI results and rendered window content:
+  `build/track-ui-final/track-ui-results.json`, `track-ui-demo.png` and
+  `track-ui-empty.png`. The saved demonstration VFS project is
+  `3f1da6f28c494bee8ecb85714e5c62c5`; it contains all five track types and three
+  imported media assets. Only uniquely named test projects were changed.
+- The ten-group live lifecycle/track regression passed, including version-2
+  migration and mixed-content document tests, playback, MP4 export, decoded
+  lossless audio/video equivalence and failed-save protection. Log:
+  `build/track-ui-regression.log`. The initial project was restored and Movie
+  exited normally after both checks. The shared VFS service remains available.
+- Window-content renders were inspected; an unnecessary inspector horizontal
+  scrollbar was removed and the final GUI check repeated after the repair.
+- Native desktop pointer delivery is **not verified**. The Windows helper could
+  read the real accessibility tree, but capture returned `FrameArrived timed out`
+  / `window capture timed out`, and clicking returned `coordinate input geometry
+  is unavailable`. GUI integration checks used mounted controls and synthesized
+  JUCE drag events, not OS-level mouse input. Manual pointer/keyboard acceptance
+  is still recommended when an interactive desktop is available.
+
+Capture, device discovery, effects, automation playback/editor and codec work
+remain deferred. Existing project/media formats and processing paths are retained.
+
+Changed files: `CMakeLists.txt`, `Source/MainComponent.cpp`,
+`Source/MainComponent.h`, `Source/TrackTimeline.inc`, `Source/TrackInspector.inc`,
+`Source/TrackUiCheck.inc`, `HANDOFF.md`, `docs/TRACK_INTERFACE.md`,
+`docs/TRACK_DOCUMENT.md`, and `docs/CAPABILITIES.md`.
+
 ## October 24 — Milestone 1: track document
 
 Implemented on local branch `feature/shared-track-document`; no merge or push.

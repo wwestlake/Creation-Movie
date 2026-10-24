@@ -75,8 +75,8 @@ reject conversion explicitly rather than dropping content.
 
 ## Boundaries
 
-The timeline now draws existing track names/order as a minimal adapter. Full
-track-management UI, scrolling for long track lists, effect processing, device
-enumeration, recording and automation evaluation remain later milestones.
+Milestone 2 supplies dynamic headers, management controls, vertical scrolling
+and the Track Inspector; see [Track interface](TRACK_INTERFACE.md). Effect
+processing, device enumeration, recording and automation evaluation remain later milestones.
 Disabled tracks contribute neither picture nor sound in preview/export; duration
 continues to include their placements. Sources do not replace the media library.

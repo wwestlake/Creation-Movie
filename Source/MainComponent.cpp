@@ -58,6 +58,9 @@ juce::var schemaObj(std::initializer_list<std::pair<juce::Identifier, juce::var>
 class MainComponent::Library final : public juce::Component
 {
 public:
+#if JUCE_DEBUG
+    friend class MainComponent::TrackUiCheck;
+#endif
     explicit Library(MainComponent& o) : owner(o)
     {
         importBtn.onClick = [this] { owner.chooseImport(); };
@@ -66,6 +69,7 @@ public:
             if (owner.selectedMedia.isNotEmpty())
                 owner.runUi("movie.timeline.place", movie::object({
                     { "assetId", owner.selectedMedia },
+                    { "trackId", owner.selectedTrack },
                     { "start", owner.playback.position() }
                 }));
         };
@@ -159,9 +163,9 @@ public:
                     [this, id = m.id](int res)
                     {
                         if (res == 1)
-                            owner.runUi("movie.timeline.place", movie::object({ { "assetId", id }, { "start", owner.playback.position() } }));
+                            owner.runUi("movie.timeline.place", movie::object({ { "assetId", id }, { "trackId", owner.selectedTrack }, { "start", owner.playback.position() } }));
                         else if (res == 2)
-                            owner.runUi("movie.timeline.place", movie::object({ { "assetId", id }, { "start", owner.document.sequence.duration() } }));
+                            owner.runUi("movie.timeline.place", movie::object({ { "assetId", id }, { "trackId", owner.selectedTrack }, { "start", owner.document.sequence.duration() } }));
                     });
             }
         }
@@ -173,6 +177,7 @@ public:
         if (owner.selectedMedia.isNotEmpty())
             owner.runUi("movie.timeline.place", movie::object({
                 { "assetId", owner.selectedMedia },
+                { "trackId", owner.selectedTrack },
                 { "start", owner.playback.position() }
             }));
     }
@@ -346,222 +351,7 @@ private:
 // =============================================================================
 // Timeline Panel
 // =============================================================================
-class MainComponent::Timeline final : public juce::Component
-{
-public:
-    explicit Timeline(MainComponent& o) : owner(o) {}
-
-    void paint(juce::Graphics& g) override
-    {
-        g.fillAll(juce::Colour(0xff0f1623));
-        const auto bounds = getLocalBounds();
-        constexpr int headerW = 92;
-        constexpr int rulerH = 26;
-        constexpr int trackH = 44;
-        const int numTracks = (int) owner.document.sequence.tracks.size();
-
-        // Track headers
-        for (int t = 0; t < numTracks; ++t)
-        {
-            const int y = rulerH + t * trackH;
-            juce::Rectangle<int> hdr(0, y, headerW, trackH - 2);
-            g.setColour(juce::Colour(0xff182234));
-            g.fillRect(hdr);
-            g.setColour(juce::Colours::white.withAlpha(0.75f));
-            g.setFont(juce::FontOptions(12.0f, juce::Font::bold));
-            g.drawText(owner.document.sequence.tracks[(size_t)t].name,
-                       hdr.reduced(8, 0), juce::Justification::centredLeft);
-
-            juce::Rectangle<int> lane(headerW, y, bounds.getWidth() - headerW, trackH - 2);
-            g.setColour(juce::Colour(t % 2 == 0 ? 0xff131c2b : 0xff111927));
-            g.fillRect(lane);
-        }
-
-        // Ruler
-        juce::Rectangle<int> ruler(headerW, 0, bounds.getWidth() - headerW, rulerH);
-        g.setColour(juce::Colour(0xff1b2538));
-        g.fillRect(ruler);
-
-        const double pps = std::max(5.0, owner.pixelsPerSecond);
-        const double stepSec = pps > 80.0 ? 0.5 : (pps > 30.0 ? 1.0 : (pps > 12.0 ? 5.0 : 10.0));
-        const double startSec = std::floor(owner.visibleStart / stepSec) * stepSec;
-        const double endSec = owner.visibleStart + ruler.getWidth() / pps;
-
-        g.setFont(juce::FontOptions(11.0f));
-        for (double s = startSec; s <= endSec; s += stepSec)
-        {
-            if (s < 0.0) continue;
-            const int x = headerW + (int) std::lround((s - owner.visibleStart) * pps);
-            if (x < headerW || x > bounds.getWidth()) continue;
-            g.setColour(juce::Colours::white.withAlpha(0.25f));
-            g.drawVerticalLine(x, (float) rulerH - 8.0f, (float) bounds.getHeight());
-            g.setColour(juce::Colours::white.withAlpha(0.75f));
-            g.drawText(juce::String(s, stepSec < 1.0 ? 1 : 0) + "s", x + 3, 4, 48, 18, juce::Justification::centredLeft);
-        }
-
-        // Clips
-        for (const auto& c : owner.document.sequence.clips)
-        {
-            const int track = juce::jlimit(0, numTracks - 1, c.trackIndex);
-            const int y = rulerH + track * trackH + 3;
-            const int x1 = headerW + (int) std::lround((c.startSeconds - owner.visibleStart) * pps);
-            const int x2 = headerW + (int) std::lround((c.startSeconds + c.durationSeconds - owner.visibleStart) * pps);
-            const int w = std::max(6, x2 - x1);
-            juce::Rectangle<int> box(x1, y, w, trackH - 8);
-            if (box.getRight() < headerW || box.getX() > bounds.getWidth())
-                continue;
-
-            const bool selected = (c.id == owner.selectedClip);
-            const bool isTitle = c.videoParams["title"].toString().isNotEmpty();
-            const juce::Colour baseCol = isTitle ? juce::Colour(0xff8b5cf6)
-                                                 : (c.kind == creation::timeline::ClipKind::audio ? juce::Colour(0xffea580c)
-                                                                                                  : juce::Colour(0xff2563eb));
-            g.setColour(baseCol.withAlpha(selected ? 0.9f : 0.68f));
-            g.fillRoundedRectangle(box.toFloat(), 5.0f);
-            g.setColour(selected ? juce::Colours::yellow : juce::Colours::white.withAlpha(0.35f));
-            g.drawRoundedRectangle(box.toFloat(), 5.0f, selected ? 2.0f : 1.0f);
-
-            g.setColour(juce::Colours::white);
-            g.setFont(juce::FontOptions(12.0f, juce::Font::bold));
-            const juce::String label = c.displayName + " ["
-                + juce::String(c.sourceStartSeconds, 2) + "s.."
-                + juce::String(c.sourceStartSeconds + c.durationSeconds, 2) + "s]";
-            g.drawText(label, box.reduced(6, 2), juce::Justification::centredLeft, true);
-        }
-
-        // Playhead
-        const int playX = headerW + (int) std::lround((owner.playback.position() - owner.visibleStart) * pps);
-        if (playX >= headerW && playX <= bounds.getWidth())
-        {
-            g.setColour(juce::Colour(0xfff43f5e));
-            g.drawVerticalLine(playX, 0.0f, (float) bounds.getHeight());
-            juce::Path head;
-            head.addTriangle((float) playX - 6.0f, 0.0f, (float) playX + 6.0f, 0.0f, (float) playX, 10.0f);
-            g.fillPath(head);
-        }
-    }
-
-    void mouseDown(const juce::MouseEvent& e) override
-    {
-        constexpr int headerW = 92;
-        constexpr int rulerH = 26;
-        constexpr int trackH = 44;
-        const double pps = std::max(5.0, owner.pixelsPerSecond);
-        const double clickTime = std::max(0.0, owner.visibleStart + (e.x - headerW) / pps);
-
-        draggingClipId.clear();
-        if (e.y < rulerH)
-        {
-            owner.runUi("movie.transport.seek", movie::object({ { "time", owner.document.sequence.snap(clickTime) } }));
-            return;
-        }
-
-        const int track = juce::jlimit(0, std::max(0, (int) owner.document.sequence.tracks.size() - 1), (e.y - rulerH) / trackH);
-        const movie::Clip* hit = nullptr;
-        for (const auto& c : owner.document.sequence.clips)
-        {
-            if (c.trackIndex == track && clickTime >= c.startSeconds && clickTime <= c.startSeconds + c.durationSeconds)
-            {
-                hit = &c;
-                break;
-            }
-        }
-
-        if (hit != nullptr)
-        {
-            owner.selectClip(hit->id);
-            if (e.mods.isPopupMenu())
-            {
-                juce::PopupMenu menu;
-                menu.addItem(1, "Split Clip Here");
-                menu.addItem(2, "Delete Clip");
-                menu.addItem(3, "Ripple Delete Clip");
-                menu.showMenuAsync(
-                    juce::PopupMenu::Options().withTargetScreenArea({ e.getScreenX(), e.getScreenY(), 1, 1 }),
-                    [this, clipId = hit->id, splitAt = owner.document.sequence.snap(clickTime)](int res)
-                    {
-                        if (res == 1)
-                            owner.runUi("movie.timeline.split", movie::object({ { "clipId", clipId }, { "time", splitAt } }));
-                        else if (res == 2)
-                            owner.runUi("movie.timeline.remove", movie::object({ { "clipId", clipId }, { "ripple", false } }));
-                        else if (res == 3)
-                            owner.runUi("movie.timeline.remove", movie::object({ { "clipId", clipId }, { "ripple", true } }));
-                    });
-                return;
-            }
-            draggingClipId = hit->id;
-            dragOffsetSeconds = clickTime - hit->startSeconds;
-        }
-        else
-        {
-            if (e.mods.isPopupMenu())
-            {
-                juce::PopupMenu menu;
-                menu.addItem(1, "Seek Playhead Here");
-                menu.addItem(2, "Place Selected Media Here", owner.selectedMedia.isNotEmpty());
-                menu.addItem(3, "Add Title Clip Here...");
-                menu.showMenuAsync(
-                    juce::PopupMenu::Options().withTargetScreenArea({ e.getScreenX(), e.getScreenY(), 1, 1 }),
-                    [this, at = owner.document.sequence.snap(clickTime), track](int res)
-                    {
-                        if (res == 1)
-                            owner.runUi("movie.transport.seek", movie::object({ { "time", at } }));
-                        else if (res == 2 && owner.selectedMedia.isNotEmpty())
-                            owner.runUi("movie.timeline.place", movie::object({ { "assetId", owner.selectedMedia }, { "start", at }, { "track", track } }));
-                        else if (res == 3)
-                            owner.titleDialog();
-                    });
-                return;
-            }
-            owner.runUi("movie.transport.seek", movie::object({ { "time", owner.document.sequence.snap(clickTime) } }));
-        }
-    }
-
-    void mouseDrag(const juce::MouseEvent& e) override
-    {
-        constexpr int headerW = 92;
-        constexpr int rulerH = 26;
-        const double pps = std::max(5.0, owner.pixelsPerSecond);
-        const double clickTime = std::max(0.0, owner.visibleStart + (e.x - headerW) / pps);
-        if (draggingClipId.isEmpty() || e.y < rulerH)
-        {
-            owner.runUi("movie.transport.seek", movie::object({ { "time", owner.document.sequence.snap(clickTime) } }));
-        }
-    }
-
-    void mouseUp(const juce::MouseEvent& e) override
-    {
-        if (draggingClipId.isEmpty())
-            return;
-
-        constexpr int headerW = 92;
-        constexpr int rulerH = 26;
-        constexpr int trackH = 44;
-        const double pps = std::max(5.0, owner.pixelsPerSecond);
-        const double dropTime = std::max(0.0, owner.visibleStart + (e.x - headerW) / pps - dragOffsetSeconds);
-        const int dropTrack = juce::jlimit(0, std::max(0, (int) owner.document.sequence.tracks.size() - 1), (e.y - rulerH) / trackH);
-        const int idx = owner.document.sequence.findClip(draggingClipId);
-        if (idx >= 0)
-        {
-            const auto& c = owner.document.sequence.clips[(size_t) idx];
-            if (std::abs(c.startSeconds - owner.document.sequence.snap(dropTime)) >= owner.document.sequence.frameSeconds() * 0.5
-                || c.trackIndex != dropTrack)
-            {
-                owner.runUi("movie.timeline.move", movie::object({
-                    { "clipId", draggingClipId },
-                    { "start", owner.document.sequence.snap(dropTime) },
-                    { "track", dropTrack }
-                }));
-            }
-        }
-        draggingClipId.clear();
-    }
-
-private:
-    MainComponent& owner;
-    juce::String draggingClipId;
-    double dragOffsetSeconds = 0.0;
-};
+#include "TrackTimeline.inc"
 
 // =============================================================================
 // Inspector Panel
@@ -702,6 +492,9 @@ private:
     juce::TextButton deleteBtn { "Delete Clip" }, rippleBtn { "Ripple Delete" };
 };
 
+#include "TrackInspector.inc"
+#include "TrackUiCheck.inc"
+
 // =============================================================================
 // MainComponent Implementation
 // =============================================================================
@@ -760,7 +553,7 @@ MainComponent::MainComponent()
     {
         visibleStart = 0.0;
         const double dur = std::max(5.0, document.sequence.duration());
-        const int availW = std::max(200, (timeline ? timeline->getWidth() : 800) - 110);
+        const int availW = std::max(200, (timeline ? timeline->getWidth() : 800) - 260);
         pixelsPerSecond = juce::jlimit(5.0, 200.0, availW / dur);
         zoom.setValue(pixelsPerSecond, juce::dontSendNotification);
         if (timeline) timeline->repaint();
@@ -782,6 +575,7 @@ MainComponent::MainComponent()
     sourceMonitor = std::make_unique<Monitor>(*this, sourcePlayback, true);
     timeline = std::make_unique<Timeline>(*this);
     inspector = std::make_unique<Inspector>(*this);
+    trackInspector = std::make_unique<TrackInspector>(*this);
     chat = std::make_unique<creation::agent::EngineerChat>(engineer);
     cards = std::make_unique<creation::agent::CardsPanel>(engineer);
 
@@ -791,6 +585,7 @@ MainComponent::MainComponent()
     dock->registerPanel("source", "Source Monitor", std::make_unique<NonOwningHost>(*sourceMonitor), Zone::CenterTab);
     dock->registerPanel("program", "Program Monitor", std::make_unique<NonOwningHost>(*monitor), Zone::CenterTab);
     dock->registerPanel("timeline", "Timeline", std::make_unique<NonOwningHost>(*timeline), Zone::Bottom);
+    dock->registerPanel("track-inspector", "Track Inspector", std::make_unique<NonOwningHost>(*trackInspector), Zone::Right);
     dock->registerPanel("inspector", "Inspector", std::make_unique<NonOwningHost>(*inspector), Zone::Right);
     dock->registerPanel("engineer", "Virtual Engineer", std::make_unique<NonOwningHost>(*chat), Zone::Right);
     dock->registerPanel("cards", "Cards", std::make_unique<NonOwningHost>(*cards), Zone::Right);
@@ -862,10 +657,20 @@ MainComponent::MainComponent()
     changed();
     setSize(1520, 940);
     startTimerHz(30);
+#if JUCE_DEBUG
+    const auto arguments=juce::StringArray::fromTokens(juce::JUCEApplication::getCommandLineParameters(),true);
+    const int testArgument=arguments.indexOf("--track-ui-check");
+    if(testArgument>=0 && testArgument+1<arguments.size())
+        trackUiCheck=std::make_unique<TrackUiCheck>(*this,juce::File(arguments[testArgument+1].unquoted()),
+            testArgument+2<arguments.size()?juce::File(arguments[testArgument+2].unquoted()):juce::File());
+#endif
 }
 
 MainComponent::~MainComponent()
 {
+#if JUCE_DEBUG
+    trackUiCheck.reset();
+#endif
     closing = true;
     stopTimer();
     api.stop();
@@ -908,6 +713,15 @@ void MainComponent::resized()
 
 bool MainComponent::keyPressed(const juce::KeyPress& key)
 {
+    if(key.getKeyCode()==juce::KeyPress::F2Key){renameTrack();return true;}
+    if(key.getModifiers().isAltDown() && (key.getKeyCode()==juce::KeyPress::upKey || key.getKeyCode()==juce::KeyPress::downKey))
+    {
+        const int index=document.sequence.findTrack(selectedTrack);
+        const int dest=index+(key.getKeyCode()==juce::KeyPress::upKey?-1:1);
+        if(index>=0 && dest>=0 && dest<(int)document.sequence.tracks.size())
+            runUi("movie.track.reorder",movie::object({{"trackId",selectedTrack},{"order",dest}}));
+        return true;
+    }
     if (key == juce::KeyPress::spaceKey)
     {
         runUi(playback.playing() ? "movie.transport.pause" : "movie.transport.play");
@@ -1329,6 +1143,7 @@ MainComponent::Result MainComponent::execute(const juce::String& name, const juc
 
     if (name == "movie.select")
     {
+        if(a["trackId"].toString().isNotEmpty())selectTrack(a["trackId"].toString(),false);
         if (a["clipId"].toString().isNotEmpty())
             selectClip(a["clipId"].toString());
         if (a["assetId"].toString().isNotEmpty())
@@ -1587,6 +1402,10 @@ void MainComponent::confirmProjectChange(const juce::String& name, const juce::v
 
 void MainComponent::changed()
 {
+    if(document.sequence.findTrack(selectedTrack)<0)
+        selectedTrack=document.sequence.tracks.empty()?juce::String():document.sequence.tracks.front().id;
+    if(trackInspector)trackInspector->sync();
+    if(timeline)timeline->sync();
     playback.setSequence(document.sequence);
     lastPreviewTime = -1.0;
     playback.requestPreview(playback.position());
@@ -1624,6 +1443,9 @@ void MainComponent::refresh()
 void MainComponent::selectClip(const juce::String& id)
 {
     selectedClip = id;
+    const int selectedIndex=document.sequence.findClip(id);
+    if(selectedIndex>=0)selectedTrack=document.sequence.owner(document.sequence.clips[(size_t)selectedIndex]);
+    if(trackInspector)trackInspector->sync();
     if (inspector)
         inspector->syncFromSelection();
     if (timeline)
@@ -1671,6 +1493,7 @@ juce::var MainComponent::state() const
         { "canUndo", document.undo.canUndo() },
         { "canRedo", document.undo.canRedo() },
         { "selectedClip", selectedClip },
+        { "selectedTrack", selectedTrack },
         { "selectedMedia", selectedMedia },
         { "codecVersion", movie::codecVersion() },
         { "transport", movie::object({
@@ -1794,6 +1617,7 @@ void MainComponent::titleDialog()
         {
             runUi("movie.timeline.title", movie::object({
                 { "text", w->getTextEditorContents("text") },
+                { "trackId", selectedTrack },
                 { "duration", w->getTextEditorContents("duration").getDoubleValue() },
                 { "start", playback.position() }
             }));
@@ -1944,6 +1768,7 @@ juce::PopupMenu MainComponent::getMenuForIndex(int, const juce::String& menuName
         m.addItem(34, "Inspector");
         m.addItem(35, "Virtual Engineer");
         m.addItem(36, "Cards");
+        m.addItem(38, "Track Inspector");
         m.addSeparator();
         m.addItem(37, "Reset Workspace Layout");
     }
@@ -1967,7 +1792,7 @@ void MainComponent::menuItemSelected(int id, int)
         case 7: requestQuit(); break;
         case 10: runUi("movie.timeline.undo"); break;
         case 11: runUi("movie.timeline.redo"); break;
-        case 20: runUi("movie.timeline.place", movie::object({ { "assetId", selectedMedia }, { "start", playback.position() } })); break;
+        case 20: runUi("movie.timeline.place", movie::object({ { "assetId", selectedMedia }, { "trackId", selectedTrack }, { "start", playback.position() } })); break;
         case 21: titleDialog(); break;
         case 22: runUi("movie.timeline.split", movie::object({ { "clipId", selectedClip }, { "time", playback.position() } })); break;
         case 23: runUi("movie.timeline.remove", movie::object({ { "clipId", selectedClip }, { "ripple", false } })); break;
@@ -1979,6 +1804,7 @@ void MainComponent::menuItemSelected(int id, int)
         case 34: if (dock) dock->activatePanel("inspector"); break;
         case 35: if (dock) dock->activatePanel("engineer"); break;
         case 36: if (dock) dock->activatePanel("cards"); break;
+        case 38: if (dock) dock->activatePanel("track-inspector"); break;
         case 37: if (dock) dock->resetLayout(); break;
         case 40: showHelp(); break;
         default: break;
