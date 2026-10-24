@@ -358,7 +358,7 @@ public:
         constexpr int headerW = 92;
         constexpr int rulerH = 26;
         constexpr int trackH = 44;
-        constexpr int numTracks = 4;
+        const int numTracks = (int) owner.document.sequence.tracks.size();
 
         // Track headers
         for (int t = 0; t < numTracks; ++t)
@@ -369,7 +369,7 @@ public:
             g.fillRect(hdr);
             g.setColour(juce::Colours::white.withAlpha(0.75f));
             g.setFont(juce::FontOptions(12.0f, juce::Font::bold));
-            g.drawText(t < 2 ? ("V" + juce::String(t + 1) + " Video") : ("A" + juce::String(t - 1) + " Audio"),
+            g.drawText(owner.document.sequence.tracks[(size_t)t].name,
                        hdr.reduced(8, 0), juce::Justification::centredLeft);
 
             juce::Rectangle<int> lane(headerW, y, bounds.getWidth() - headerW, trackH - 2);
@@ -456,7 +456,7 @@ public:
             return;
         }
 
-        const int track = juce::jlimit(0, 3, (e.y - rulerH) / trackH);
+        const int track = juce::jlimit(0, std::max(0, (int) owner.document.sequence.tracks.size() - 1), (e.y - rulerH) / trackH);
         const movie::Clip* hit = nullptr;
         for (const auto& c : owner.document.sequence.clips)
         {
@@ -539,7 +539,7 @@ public:
         constexpr int trackH = 44;
         const double pps = std::max(5.0, owner.pixelsPerSecond);
         const double dropTime = std::max(0.0, owner.visibleStart + (e.x - headerW) / pps - dragOffsetSeconds);
-        const int dropTrack = juce::jlimit(0, 3, (e.y - rulerH) / trackH);
+        const int dropTrack = juce::jlimit(0, std::max(0, (int) owner.document.sequence.tracks.size() - 1), (e.y - rulerH) / trackH);
         const int idx = owner.document.sequence.findClip(draggingClipId);
         if (idx >= 0)
         {
@@ -1042,6 +1042,14 @@ MainComponent::Result MainComponent::execute(const juce::String& name, const juc
         return Result::success(state());
     if (name == "movie.jobs.get")
         return Result::success(jobs());
+    if (name == "movie.track.list")
+        return Result::success(document.sequence.toJson()["tracks"]);
+    if (name == "movie.track.get")
+    {
+        const int index=document.sequence.findTrack(a["trackId"].toString());
+        if(index<0) return Result::failure("unknown_track","Unknown track identity.");
+        return Result::success(document.sequence.tracks[(size_t)index].toJson());
+    }
     if (name == "movie.app.close")
     {
         if (job && job->status == "running")
@@ -1229,6 +1237,14 @@ MainComponent::Result MainComponent::execute(const juce::String& name, const juc
             });
     }
 
+    if(name.startsWith("movie.track."))
+    {
+        juce::String error;
+        if(!document.edit(name.fromFirstOccurrenceOf("movie.",false,false),a,error))
+            return Result::failure("edit_rejected",error);
+        return Result::success(state());
+    }
+
     if (name == "movie.timeline.place" || name == "movie.timeline.title"
         || name == "movie.timeline.split" || name == "movie.timeline.trim"
         || name == "movie.timeline.move" || name == "movie.timeline.remove"
@@ -1408,6 +1424,22 @@ void MainComponent::registerCommands()
         Effect::read, schemaObj({}));
     reg("movie.jobs.get", "Get Background Jobs", "Returns the current or most recent background media job status.",
         Effect::read, schemaObj({}));
+    reg("movie.track.list", "List Tracks", "Returns tracks in display order.", Effect::read, schemaObj({}));
+    reg("movie.track.get", "Get Track", "Returns a track by stable identity.", Effect::read,
+        schemaObj({{"trackId",movie::object({{"type","string"}})}},{"trackId"}));
+    auto trackSchema=schemaObj({
+        {"trackId",movie::object({{"type","string"}})}, {"name",movie::object({{"type","string"}})},
+        {"type",movie::object({{"type","string"},{"enum",juce::var(juce::Array<juce::var>{"video","audio","image","effects","automation"})}})},
+        {"order",movie::object({{"type","integer"}})}, {"enabled",movie::object({{"type","boolean"}})},
+        {"removePlacements",movie::object({{"type","boolean"}})},
+        {"source",movie::object({{"type",juce::var(juce::Array<juce::var>{"object","null"})}})},
+        {"armed",movie::object({{"type","boolean"}})}, {"monitoring",movie::object({{"type","boolean"}})},
+        {"height",movie::object({{"type","integer"}})}, {"automation",movie::object({{"type","object"}})}
+    });
+    for(const auto* operation:{"create","remove","rename","reorder","type","enabled","source","preferences","automation"})
+        reg("movie.track."+juce::String(operation),"Track "+juce::String(operation),
+            "Undoable track document operation. Sources and recording preferences configure the document only. See docs/TRACK_DOCUMENT.md.",
+            juce::String(operation)=="remove"?Effect::destructive:Effect::write,trackSchema);
     reg("movie.app.close", "Close Movie", "Closes Movie after saving dirty edits. Refuses while a job is active; a failed save keeps the app open and the document dirty.",
         Effect::external, schemaObj({}));
     reg("movie.job.cancel", "Cancel Background Job", "Requests cancellation of the active job. Inspect its terminal status: already committed writes remain completed.",
@@ -1438,7 +1470,8 @@ void MainComponent::registerCommands()
             { "start", movie::object({ { "type", "number" } }) },
             { "duration", movie::object({ { "type", "number" } }) },
             { "sourceIn", movie::object({ { "type", "number" } }) },
-            { "track", movie::object({ { "type", "integer" } }) }
+            { "track", movie::object({ { "type", "integer" } }) },
+            { "trackId", movie::object({ { "type", "string" } }) }
         }, { "assetId" }));
 
     reg("movie.timeline.title", "Add Title Clip", "Adds a title overlay clip onto the timeline.",
@@ -1446,7 +1479,8 @@ void MainComponent::registerCommands()
             { "text", movie::object({ { "type", "string" } }) },
             { "start", movie::object({ { "type", "number" } }) },
             { "duration", movie::object({ { "type", "number" } }) },
-            { "track", movie::object({ { "type", "integer" } }) }
+            { "track", movie::object({ { "type", "integer" } }) },
+            { "trackId", movie::object({ { "type", "string" } }) }
         }, { "text" }));
 
     reg("movie.timeline.split", "Split Timeline Clip",
@@ -1467,7 +1501,8 @@ void MainComponent::registerCommands()
         Effect::write, schemaObj({
             { "clipId", movie::object({ { "type", "string" } }) },
             { "start", movie::object({ { "type", "number" } }) },
-            { "track", movie::object({ { "type", "integer" } }) }
+            { "track", movie::object({ { "type", "integer" } }) },
+            { "trackId", movie::object({ { "type", "string" } }) }
         }, { "clipId", "start" }));
 
     reg("movie.timeline.remove", "Remove Timeline Clip", "Removes a clip (with optional ripple delete).",

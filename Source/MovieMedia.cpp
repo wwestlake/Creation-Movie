@@ -257,7 +257,7 @@ juce::Image Renderer::video(double seconds,int width,int height)
 {
     juce::Image output(juce::Image::ARGB,width,height,true);juce::Graphics g(output);g.fillAll(juce::Colours::black);
     std::vector<const Clip*> active;
-    for(const auto& c:sequence.clips)if(seconds+1e-8>=c.startSeconds && seconds<c.startSeconds+c.durationSeconds-1e-8)active.push_back(&c);
+    for(const auto& c:sequence.clips)if(sequence.trackEnabled(c) && seconds+1e-8>=c.startSeconds && seconds<c.startSeconds+c.durationSeconds-1e-8)active.push_back(&c);
     std::stable_sort(active.begin(),active.end(),[](auto* a,auto* b){return a->trackIndex<b->trackIndex;});
     for(auto* c:active)
     {
@@ -282,6 +282,7 @@ void Renderer::audio(double seconds,int samples,int rate,float* output)
     std::fill(output,output+samples*2,0.0f);std::vector<float> scratch((size_t)samples*2);
     for(const auto& c:sequence.clips)
     {
+        if(!sequence.trackEnabled(c))continue;
         auto* m=sequence.findMedia(c.assetId);if(!m || !m->info.hasAudio || c.soundDetached)continue;
         const auto from=std::max(seconds,c.startSeconds),to=std::min(seconds+(double)samples/rate,c.startSeconds+c.durationSeconds);
         if(to<=from)continue;

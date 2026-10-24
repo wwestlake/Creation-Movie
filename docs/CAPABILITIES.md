@@ -8,6 +8,9 @@
 - Title overlays, clip gain/opacity, document undo/redo and versioned VFS persistence.
 - Playback and background exports using MP4, ProRes/MOV and FFV1/MKV presets.
 - Shared Virtual Engineer tools and authenticated localhost automation commands.
+- Persistent user-managed track document, stable clip ownership, configuration-only
+  source/arm/monitor preferences, and automation curve/target storage. See
+  [Track document](TRACK_DOCUMENT.md) for commands and version-2 migration policy.
 
 These are implementation capabilities, not a claim that every format, workflow or UI path has passed acceptance testing.
 

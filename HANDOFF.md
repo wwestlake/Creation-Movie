@@ -1,5 +1,42 @@
 # Djehuti Movie implementation handoff
 
+## October 24 — Milestone 1: track document
+
+Implemented on local branch `feature/shared-track-document`; no merge or push.
+See `docs/TRACK_DOCUMENT.md` for the schema, command contract, shared reuse,
+compatibility policy and deferred work. No Station or shared source changes.
+
+Movie extends shared TimelineTrack and reuses shared AutomationPoint/curve
+representations and split/delete helpers. Schema 3 persists ordered tracks and
+stable clip ownership. Version 2 converts transactionally in memory into eight
+deterministically identified legacy mixed-media tracks. Opening never writes the
+conversion; only successful saving does. Existing source/timing/render order is
+preserved. Effects/automation processing and capture remain deferred.
+
+Validation completed:
+
+- Single-worker Debug build of CreationMovieApp and MovieDocumentTests passed.
+  Warnings remain, including a local-name shadow warning; not zero-warning.
+- MovieDocumentTests passed: all eight legacy indices, deterministic conversion,
+  media/version/timing preservation, track commands, undo/redo, removal protection,
+  source configuration and runtime-handle rejection, stable automation bindings,
+  schema round trip, atomic failed load, shared split ownership and shared curves.
+- `Check-MovieLifecycle.py --tracks` passed ten live check groups using a
+  disposable VFS project and real video: track queries/commands, source and
+  preferences persistence, migration/save/reopen, advancing playback, FFV1
+  video/audio decoded SHA-256 equivalence across migration, MP4 export, and the
+  existing failed-open/failed-save/close guards. The test app exited normally.
+- Logs: `build/track-tests-build.log`, `build/track-app-build.log`,
+  `build/track-live-check.log`, `build/track-lifecycle-results.json`.
+- Initial live invocation found a stale heartbeat and no storage service; the
+  existing installed service was started with its current configuration. It
+  remains available. No existing service or user app was terminated.
+
+Full track-management UI, long-list scrolling, device activation, recording,
+effect processing and automation playback/editor remain later milestones.
+Station was not rebuilt: its code and shared code were unchanged. This is focused
+functional verification, not a codec matrix or complete visual acceptance pass.
+
 Updated October 19, 2026. Task: [background job and project lifecycle reliability](https://github.com/wwestlake/Creation-Movie/issues/35).
 
 ## Current foundation
