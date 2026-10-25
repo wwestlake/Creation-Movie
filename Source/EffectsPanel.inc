@@ -4,9 +4,10 @@ public:
 #if JUCE_DEBUG
     friend class MainComponent::TrackUiCheck;
 #endif
-    explicit EffectsPanel(MainComponent& o):owner(o)
+    explicit EffectsPanel(MainComponent& o):automation(o),owner(o)
     {
         for(auto* c:std::initializer_list<juce::Component*>{&context,&browserLabel,&browser,&add,&chainLabel,&chain,&up,&down,&remove,&enabled,&bypass,&notice,&view})addAndMakeVisible(c);
+        addAndMakeVisible(automation);
         view.setViewedComponent(&parameters,false);view.setScrollBarsShown(true,false);
         browserLabel.setText("Available effects",juce::dontSendNotification);chainLabel.setText("Processing order",juce::dontSendNotification);
         add.onClick=[this]{
@@ -24,9 +25,13 @@ public:
         bypass.onClick=[this]{command("bypass",movie::object({{"value",bypass.getToggleState()}}));};
         notice.setJustificationType(juce::Justification::topLeft);
     }
+    void selectPoint(const juce::String& id){automation.selectPoint(id);}
     void sync()
     {
         syncing=true;const int ti=owner.document.sequence.findTrack(owner.selectedTrack);
+        const bool isAutomation=ti>=0 && owner.document.sequence.tracks[(size_t)ti].type=="automation";
+        for(auto* child:getChildren())child->setVisible(child==&automation?isAutomation:!isAutomation);
+        if(isAutomation){automation.sync();syncing=false;resized();return;}
         browser.clear(juce::dontSendNotification);chain.clear(juce::dontSendNotification);available.clear();ids.clear();
         const movie::Effect* effect=nullptr;
         if(ti>=0)
@@ -41,7 +46,7 @@ public:
             }
             if(std::find(ids.begin(),ids.end(),selected)==ids.end())selected=ids.empty()?juce::String():ids.back();
             for(const auto& e:t.effects)if(e.id==selected)effect=&e;
-            notice.setText(t.type=="effects"?"Effects-track routing has not been defined. Insert effects on a video, audio or image track.":t.type=="automation"?"Stored automation is preserved. Evaluation and curve editing are deferred.":"Track effects process after clip gain/opacity and before track mixing/composition. Later visual tracks appear above earlier tracks.",juce::dontSendNotification);
+            notice.setText(t.type=="effects"?"Effects-track routing has not been defined. Insert effects on a video, audio or image track.":t.type=="automation"?"Select an automation lane to edit its keyframes here.":"Track effects process after clip gain/opacity and before track mixing/composition. Later visual tracks appear above earlier tracks.",juce::dontSendNotification);
         }
         else{context.setText("Select a track first",juce::dontSendNotification);selected={};notice.setText("",juce::dontSendNotification);}
         browser.setSelectedId(available.empty()?0:std::min(std::max(1,lastBrowser),(int)available.size()),juce::dontSendNotification);
@@ -53,10 +58,12 @@ public:
         const auto signature=owner.selectedTrack+selected+(effect?effect->type:juce::String());
         if(signature!=parameterSignature)
         {
-            sliders.clear();selectors.clear();labels.clear();parameterSignature=signature;
+            sliders.clear();selectors.clear();labels.clear();automateButtons.clear();parameterSignature=signature;
             if(effect)for(const auto& p:movie::effectDefinition(effect->type)->parameters)
             {
                 auto* label=labels.add(new juce::Label);label->setText(p.name+(p.automatable?"":" (manual)"),juce::dontSendNotification);parameters.addAndMakeVisible(label);
+                auto* automate=automateButtons.add(new juce::TextButton("Automate"));automate->setComponentID(p.id);automate->setEnabled(p.automatable);parameters.addAndMakeVisible(automate);
+                automate->onClick=[this,key=p.id]{openAutomation(key);};
                 if(p.kind=="choice")
                 {
                     auto* choice=selectors.add(new juce::ComboBox);for(int i=0;i<p.choices.size();++i)choice->addItem(p.choices[i],i+1);
@@ -82,6 +89,7 @@ public:
     }
     void resized()override
     {
+        if(automation.isVisible()){automation.setBounds(getLocalBounds());return;}
         auto area=getLocalBounds().reduced(10);context.setBounds(area.removeFromTop(30));browserLabel.setBounds(area.removeFromTop(22));browser.setBounds(area.removeFromTop(28));area.removeFromTop(5);add.setBounds(area.removeFromTop(26));
         chainLabel.setBounds(area.removeFromTop(24));chain.setBounds(area.removeFromTop(28));area.removeFromTop(5);
         auto buttons=area.removeFromTop(26);up.setBounds(buttons.removeFromLeft(50));down.setBounds(buttons.removeFromLeft(60));remove.setBounds(buttons);
@@ -91,7 +99,7 @@ public:
         if(ti>=0)for(const auto& e:owner.document.sequence.tracks[(size_t)ti].effects)if(e.id==selected)effect=&e;
         if(effect)for(size_t i=0;i<movie::effectDefinition(effect->type)->parameters.size();++i)
         {
-            labels[(int)i]->setBounds(0,y,width,22);y+=22;
+            labels[(int)i]->setBounds(0,y,std::max(20,width-90),22);automateButtons[(int)i]->setBounds(std::max(20,width-90),y,90,22);y+=22;
             const auto& p=movie::effectDefinition(effect->type)->parameters[i];
             if(p.kind=="choice")selectors[ci++]->setBounds(0,y,width,26);else sliders[si++]->setBounds(0,y,width,26);y+=34;
         }
@@ -99,6 +107,17 @@ public:
     }
     void paint(juce::Graphics& g)override{g.fillAll(creation_movie::branding::panelColour());}
 private:
+    void openAutomation(const juce::String& key)
+    {
+        const auto track=owner.selectedTrack,effect=selected;juce::String lane;
+        for(const auto& t:owner.document.sequence.tracks)if(t.type=="automation" && t.targetTrackId==track && t.targetEffectId==effect && t.parameterId==key){lane=t.id;break;}
+        if(lane.isEmpty())
+        {
+            owner.runUi("movie.automation.create",movie::object({{"trackId",track},{"effectId",effect},{"parameterId",key}}));
+            for(const auto& t:owner.document.sequence.tracks)if(t.type=="automation" && t.targetTrackId==track && t.targetEffectId==effect && t.parameterId==key){lane=t.id;break;}
+        }
+        if(lane.isNotEmpty()){owner.selectTrack(lane,false);owner.dock->activatePanel("effects");owner.timeline->reveal(lane);}
+    }
     void parameter(const juce::String& id,double value,const juce::String& group)
     {command("parameter",movie::object({{"parameterId",id},{"value",value},{"gestureId",group}}));}
     void command(const char* operation,juce::var args=movie::object({}))
@@ -107,6 +126,8 @@ private:
         owner.runUi("movie.effect."+juce::String(operation),args);sync();
     }
     void move(int delta){const auto i=std::find(ids.begin(),ids.end(),selected);if(i!=ids.end())command("reorder",movie::object({{"order",(int)(i-ids.begin())+delta}}));}
+    AutomationEditor automation;
+    juce::OwnedArray<juce::TextButton> automateButtons;
     MainComponent& owner;bool syncing=false;int lastBrowser=1;juce::String selected,parameterSignature,gesture;
     std::vector<juce::String> available,ids;
     juce::Label context,browserLabel,chainLabel,notice;juce::ComboBox browser,chain;

@@ -58,7 +58,7 @@ struct MediaReader::Impl
     Kind kind;bool drained=false,hasFuture=false;double origin=0,lastRequest=-100,lastVideoTime=-1,futureTime=0;
     juce::Image lastImage;
     int lastWidth=0,lastHeight=0,outputRate=0,rotationDegrees=0;
-    int64_t pcmStart=0,nextSample=0;
+    int64_t pcmStart=0,nextSample=0;bool audioClock=false;
     std::vector<float> pcm;
     explicit Impl(std::unique_ptr<juce::InputStream> in,Kind k):input(std::move(in)),kind(k){}
     ~Impl()
@@ -158,7 +158,7 @@ struct MediaReader::Impl
         require(io && (io->seekable&AVIO_SEEKABLE_NORMAL),"Cannot seek a non-seekable media stream.");
         const auto time=(int64_t)std::llround((std::max(0.0,seconds)+origin)/av_q2d(stream->time_base));
         check(av_seek_frame(format,stream->index,time,AVSEEK_FLAG_BACKWARD),"Seek media");
-        avcodec_flush_buffers(codec);drained=false;hasFuture=false;lastVideoTime=-1;lastImage={};pcm.clear();swr_free(&resampler);
+        avcodec_flush_buffers(codec);drained=false;hasFuture=false;lastVideoTime=-1;lastImage={};pcm.clear();pcmStart=0;nextSample=0;audioClock=false;swr_free(&resampler);
     }
     juce::Image convert(AVFrame* f,int maxWidth,int maxHeight)
     {
@@ -234,7 +234,13 @@ void MediaReader::audioAt(double seconds,int samples,int rate,float* output)
         }
         const auto delay=swr_get_delay(d.resampler,d.frame->sample_rate);
         const auto time=timestamp(d.frame,d.stream,d.origin,(double)d.nextSample/rate);
-        d.pcmStart=(int64_t)std::llround(time*rate)-av_rescale_rnd(delay,rate,d.frame->sample_rate,AV_ROUND_NEAR_INF);
+        const auto timestampStart=(int64_t)std::llround(time*rate)-av_rescale_rnd(delay,rate,d.frame->sample_rate,AV_ROUND_NEAR_INF);
+        // Coarse container timestamps (e.g. Matroska milliseconds) round adjacent
+        // PCM packets independently. Keep the exact sample clock inside that
+        // quantization tolerance; real discontinuities still re-anchor to PTS.
+        const auto tolerance=std::max<int64_t>(1,(int64_t)std::ceil(rate*av_q2d(d.stream->time_base)));
+        d.pcmStart=d.audioClock && std::abs(timestampStart-d.nextSample)<=tolerance?d.nextSample:timestampStart;
+        d.audioClock=true;
         const int capacity=(int)av_rescale_rnd(delay+d.frame->nb_samples,rate,d.frame->sample_rate,AV_ROUND_UP)+32;
         d.pcm.resize((size_t)capacity*2);uint8_t* destination[]{(uint8_t*)d.pcm.data()};
         const int n=swr_convert(d.resampler,destination,capacity,(const uint8_t**)d.frame->extended_data,d.frame->nb_samples);
@@ -244,7 +250,7 @@ void MediaReader::audioAt(double seconds,int samples,int rate,float* output)
 
 Renderer::Renderer(Sequence s,std::atomic<bool>* c):sequence(std::move(s)),cancel(c)
 {
-    sequence.resolveTrackIndices();trackClips.resize(sequence.tracks.size());spans.resize(sequence.tracks.size(),{1.0e30,0});audioEffects.resize(sequence.tracks.size());
+    sequence.resolveTrackIndices();automation=resolveAutomation(sequence);trackClips.resize(sequence.tracks.size());spans.resize(sequence.tracks.size(),{1.0e30,0});audioEffects.resize(sequence.tracks.size());
     for(size_t i=0;i<sequence.clips.size();++i)
     {
         const auto& clip=sequence.clips[i];if(clip.trackIndex<0)continue;
@@ -289,7 +295,7 @@ juce::Image Renderer::video(double seconds,int width,int height)
             const auto image=reader(*m,false).videoAt(m->info.still?0:c.sourceStartSeconds+seconds-c.startSeconds,width,height);
             if(image.isValid())g.drawImageWithin(image,0,0,width,height,juce::RectanglePlacement::centred,false);
         }
-        if(processing){layerGraphics.reset();processVideoEffects(layer,track.effects);composite.setOpacity(1);composite.drawImageAt(layer,0,0);}
+        if(processing){layerGraphics.reset();const auto evaluated=evaluatedEffects(track.effects,automation,seconds);processVideoEffects(layer,evaluated);composite.setOpacity(1);composite.drawImageAt(layer,0,0);}
     }
     return output;
 }
@@ -312,7 +318,7 @@ void Renderer::audioBlock(double seconds,int samples,int rate,float* output)
             const float gain=(float)(double)c.videoParams.getWithDefault("gain",1.0);
             for(int i=0;i<n*2;++i)trackBuffer[(size_t)offset*2+i]+=scratch[(size_t)i]*gain;
         }
-        audioEffects[ti].process(trackBuffer.data(),samples,rate,seconds-spans[ti].first,spans[ti].second-spans[ti].first,track.effects);
+        audioEffects[ti].process(trackBuffer.data(),samples,rate,seconds-spans[ti].first,spans[ti].second-spans[ti].first,track.effects,&automation,seconds);
         for(int i=0;i<samples*2;++i)output[i]+=trackBuffer[(size_t)i];
     }
     for(int i=0;i<samples*2;++i)output[i]=juce::jlimit(-1.0f,1.0f,output[i]);

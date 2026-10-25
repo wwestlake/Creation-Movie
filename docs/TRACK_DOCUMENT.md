@@ -82,3 +82,7 @@ and the Track Inspector; see [Track interface](TRACK_INTERFACE.md). Effect
 processing, device enumeration, recording and automation evaluation remain later milestones.
 Disabled tracks contribute neither picture nor sound in preview/export; duration
 continues to include their placements. Sources do not replace the media library.
+
+Milestone 4 evaluates the existing effect-parameter automation targets/points.
+The optional `automationVisible` flag defaults to true. Schema remains 4;
+see [Automation](AUTOMATION.md) for editing, compatibility and runtime behavior.

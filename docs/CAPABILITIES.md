@@ -2,6 +2,10 @@
 
 ## Implemented foundation
 
+Milestone 4 adds persistent effect automation lanes, timeline keyframes and exact
+time/value controls. Audio evaluates per sample and video per frame through the
+same preview/export renderer. See [Automation](AUTOMATION.md).
+
 Milestone 3 adds functional track effects through the common preview/export
 renderer: gain, balance, fades, filtering, colour, opacity and crop/transform.
 The docked Effects browser/inspector edits ordered, persistent, undoable chains.

@@ -1,5 +1,7 @@
 # Movie effects (Milestone 3)
 
+Milestone 4 extends these parameters with timeline automation: see [Automation](AUTOMATION.md).
+
 ## Existing facilities and reuse
 
 Movie already used one `Renderer` for audio/video playback workers and FFmpeg

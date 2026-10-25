@@ -44,7 +44,7 @@ juce::var Track::toJson() const
         curve.add(object({{"id",p.id},{"seconds",p.seconds},{"value",p.value},
             {"shape",creation::timeline::toStorageToken(p.shape)},{"tension",p.tension}}));
     return object({{"id",id},{"name",name},{"type",type},{"enabled",enabled},{"height",heightPixels},
-        {"armed",armed},{"monitoring",monitoring},{"legacyMixed",legacyMixed},{"source",source},{"effects",chain},
+        {"automationVisible",automationVisible},{"armed",armed},{"monitoring",monitoring},{"legacyMixed",legacyMixed},{"source",source},{"effects",chain},
         {"automation",object({{"trackId",targetTrackId},{"clipId",targetClipId},{"effectId",targetEffectId},
             {"parameterId",parameterId},{"points",curve}})}});
 }
@@ -59,6 +59,8 @@ bool Track::fromJson(const juce::var& v, Track& result, juce::String& error)
         if (!v[key].isBool()) return fail("Track flags must be boolean.");
     if (!v["height"].isInt() || (int)v["height"]<44 || (int)v["height"]>512) return fail("Invalid track height.");
     t.enabled=v["enabled"]; t.armed=v["armed"]; t.monitoring=v["monitoring"]; t.legacyMixed=v["legacyMixed"];
+    if(v.hasProperty("automationVisible") && !v["automationVisible"].isBool())return fail("Automation visibility must be boolean.");
+    t.automationVisible=v.getProperty("automationVisible",true);
     t.heightPixels=v["height"]; t.source=v["source"].clone();
     if ((t.armed || t.monitoring) && t.type!="audio" && t.type!="video") return fail("Only audio/video tracks support arm/monitor preferences.");
     if (!sourceValid(t,error)) return false;

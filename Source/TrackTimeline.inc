@@ -34,7 +34,7 @@ public:
     int laneY(int index) const
     {
         int y=top-(int)offset;
-        for(int i=0;i<index;++i)y+=owner.document.sequence.tracks[(size_t)i].heightPixels;
+        for(int i=0;i<index;++i){const auto& t=owner.document.sequence.tracks[(size_t)i];if(t.type!="automation" || t.automationVisible)y+=t.heightPixels;}
         return y;
     }
     int laneAt(int y, bool clamp=false) const
@@ -44,10 +44,18 @@ public:
         const auto& tracks=owner.document.sequence.tracks;
         for(size_t i=0;i<tracks.size();++i)
         {
+            if(tracks[i].type=="automation" && !tracks[i].automationVisible)continue;
             bottom+=tracks[i].heightPixels;
             if(y<bottom)return (int)i;
         }
         return clamp && !tracks.empty()?(int)tracks.size()-1:-1;
+    }
+    void reveal(const juce::String& id)
+    {
+        const int i=owner.document.sequence.findTrack(id);if(i<0)return;
+        const auto& t=owner.document.sequence.tracks[(size_t)i];if(t.type=="automation" && !t.automationVisible)return;
+        const int y=laneY(i);if(y<top || y+t.heightPixels>getHeight())scroll.setCurrentRangeStart(std::max(0.0,offset+y-top));
+        offset=scroll.getCurrentRangeStart();repaint();
     }
     void beginRename()
     {
@@ -87,7 +95,7 @@ public:
             g.drawText("No tracks yet. Choose Add Track to begin.",bounds.withTrimmedTop(top),juce::Justification::centred);
         for(size_t i=0;i<seq.tracks.size();++i)
         {
-            const auto& t=seq.tracks[i];const int y=laneY((int)i),h=t.heightPixels;
+            const auto& t=seq.tracks[i];if(t.type=="automation" && !t.automationVisible)continue;const int y=laneY((int)i),h=t.heightPixels;
             if(y+h<top || y>getHeight())continue;
             const bool selected=t.id==owner.selectedTrack;
             g.setColour(selected?juce::Colour(0xff273f5d):juce::Colour(0xff182234));
@@ -109,6 +117,27 @@ public:
             }
             g.setColour(!t.enabled?juce::Colour(0xff10141c):selected?juce::Colour(0xff17263b):juce::Colour(0xff111927));
             g.fillRect(headerW,y,std::max(0,bounds.getWidth()-headerW),h-2);
+        }
+        for(size_t i=0;i<seq.tracks.size();++i)
+        {
+            const auto& lane=seq.tracks[i];if(lane.type!="automation" || !lane.automationVisible)continue;
+            const int y=laneY((int)i),height=lane.heightPixels;if(y+height<top || y>getHeight())continue;
+            g.saveState();g.reduceClipRegion(headerW,std::max(top,y),std::max(0,bounds.getWidth()-headerW),std::max(0,std::min(getHeight(),y+height)-std::max(top,y)));
+            const auto* parameter=movie::automationParameter(seq,lane);
+            if(parameter && !lane.points.empty())
+            {
+                movie::ParameterCurve curve{&lane.points,parameter};juce::Path path;
+                for(int x=headerW;x<bounds.getWidth();x+=2)
+                {
+                    const double actual=curve.at(timeAt(x));const float py=(float)(y+height-10-(actual-parameter->minimum)/(parameter->maximum-parameter->minimum)*(height-20));
+                    if(x==headerW)path.startNewSubPath((float)x,py);else path.lineTo((float)x,py);
+                }
+                g.setColour(lane.enabled?juce::Colours::cyan:juce::Colours::grey);g.strokePath(path,juce::PathStrokeType(1.5f));
+                for(const auto& point:lane.points)
+                {const float x=(float)(headerW+(point.seconds-owner.visibleStart)*pps),py=(float)(y+height-10-point.value*(height-20));g.fillEllipse(x-4,py-4,8,8);}
+            }
+            else{g.setColour(juce::Colours::silver);g.drawText(parameter?"No keyframes: manual value":"Unresolved target: inactive",headerW+8,y+8,300,22,juce::Justification::centredLeft);}
+            g.restoreState();
         }
         for(const auto& c:seq.clips)
         {
@@ -142,11 +171,17 @@ public:
     }
     void mouseDoubleClick(const juce::MouseEvent& e) override
     {
-        if(e.x<headerW && laneAt(e.y)>=0)beginRename();
+        const int i=laneAt(e.y);
+        if(e.x<headerW && i>=0)beginRename();
+        else if(i>=0 && owner.document.sequence.tracks[(size_t)i].type=="automation")
+        {
+            const auto lane=owner.document.sequence.tracks[(size_t)i];const auto* p=movie::automationParameter(owner.document.sequence,lane);if(!p)return;
+            owner.runUi("movie.automation.point",movie::object({{"laneId",lane.id},{"seconds",owner.document.sequence.snap(timeAt(e.x))},{"value",valueAt(e.y,i,*p)}}));
+        }
     }
     void mouseDown(const juce::MouseEvent& e) override
     {
-        grabKeyboardFocus();dragClip={};dragTrack={};dropIndex=-1;
+        grabKeyboardFocus();dragClip={};dragTrack={};dragPoint={};dropIndex=-1;
         if(e.y<top)
         {
             if(e.x>=headerW)owner.runUi("movie.transport.seek",movie::object({{"time",timeAt(e.x)}}));
@@ -170,6 +205,16 @@ public:
         }
         owner.selectTrack(t.id,false);
         const auto time=timeAt(e.x);
+        if(t.type=="automation")
+        {
+            owner.dock->activatePanel("effects");
+            for(const auto& p:t.points)
+            {
+                const double x=headerW+(p.seconds-owner.visibleStart)*owner.pixelsPerSecond,py=laneY(index)+t.heightPixels-10-p.value*(t.heightPixels-20);
+                if(std::abs(e.x-x)<9 && std::abs(e.y-py)<9){dragPoint=p.id;pointLane=t.id;owner.selectAutomationPoint(t.id,p.id);break;}
+            }
+            return;
+        }
         for(const auto& c:owner.document.sequence.clips)
             if(owner.document.sequence.owner(c)==t.id && time>=c.startSeconds && time<=c.startSeconds+c.durationSeconds)
             {
@@ -210,6 +255,13 @@ public:
     }
     void mouseUp(const juce::MouseEvent& e) override
     {
+        if(dragPoint.isNotEmpty() && e.getDistanceFromDragStart()>3)
+        {
+            const int i=owner.document.sequence.findTrack(pointLane);
+            if(i>=0)if(const auto* p=movie::automationParameter(owner.document.sequence,owner.document.sequence.tracks[(size_t)i]))
+                owner.runUi("movie.automation.point",movie::object({{"laneId",pointLane},{"pointId",dragPoint},{"seconds",owner.document.sequence.snap(timeAt(e.x))},{"value",valueAt(e.y,i,*p)}}));
+        }
+        dragPoint={};
         if(dragTrack.isNotEmpty() && dropIndex>=0)
             owner.runUi("movie.track.reorder",movie::object({{"trackId",dragTrack},{"order",dropIndex}}));
         if(dragClip.isNotEmpty() && e.getDistanceFromDragStart()>4)
@@ -220,13 +272,19 @@ public:
         dragClip={};dragTrack={};dropIndex=-1;repaint();
     }
 private:
+    double valueAt(int y,int lane,const movie::EffectParameter& p)const
+    {
+        const auto h=owner.document.sequence.tracks[(size_t)lane].heightPixels;
+        double v=p.minimum+juce::jlimit(0.0,1.0,(double)(laneY(lane)+h-10-y)/(h-20))*(p.maximum-p.minimum);
+        return p.kind=="choice"?std::round(v):v;
+    }
     double timeAt(int x) const{return std::max(0.0,owner.visibleStart+(x-headerW)/std::max(5.0,owner.pixelsPerSecond));}
-    int contentHeight()const{int h=0;for(const auto& t:owner.document.sequence.tracks)h+=t.heightPixels;return h;}
+    int contentHeight()const{int h=0;for(const auto& t:owner.document.sequence.tracks)if(t.type!="automation" || t.automationVisible)h+=t.heightPixels;return h;}
     void scrollBarMoved(juce::ScrollBar*,double start)override{offset=start;rename.setVisible(false);repaint();}
     void finishRename(){const auto id=renameId,text=rename.getText();rename.setVisible(false);owner.runUi("movie.track.rename",movie::object({{"trackId",id},{"name",text}}));}
     MainComponent& owner;
     static constexpr int headerW=246,top=54;
     juce::TextButton add{"+ Add Track"},remove{"Remove Track"};
     juce::ScrollBar scroll{true};juce::TextEditor rename;
-    juce::String dragClip,dragTrack,renameId;double dragOffset=0,offset=0;int dropIndex=-1;
+    juce::String dragClip,dragTrack,renameId,dragPoint,pointLane;double dragOffset=0,offset=0;int dropIndex=-1;
 };

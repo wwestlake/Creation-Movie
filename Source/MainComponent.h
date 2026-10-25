@@ -17,7 +17,7 @@ public:
     bool keyPressed(const juce::KeyPress&)override;
     void requestQuit();
 private:
-    class Library;class Monitor;class Timeline;class Inspector;class TrackInspector;class EffectsPanel;
+    class Library;class Monitor;class Timeline;class Inspector;class TrackInspector;class EffectsPanel;class AutomationEditor;
     struct Job
     {
         // Message-thread fields. Workers may access only progress and cancel.
@@ -32,6 +32,7 @@ private:
     void confirmProjectChange(const juce::String&, const juce::var&);
     void changed();void refresh();void selectClip(const juce::String&);void selectMedia(const juce::String&);
     void selectTrack(const juce::String&, bool showInspector=true);
+    void selectAutomationPoint(const juce::String& lane,const juce::String& point);
     void addTrackMenu(juce::Component*);
     void trackMenu(const juce::String&, juce::Point<int>);
     void removeTrack(const juce::String&);

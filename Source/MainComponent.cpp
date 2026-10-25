@@ -492,6 +492,7 @@ private:
     juce::TextButton deleteBtn { "Delete Clip" }, rippleBtn { "Ripple Delete" };
 };
 
+#include "AutomationEditor.inc"
 #include "EffectsPanel.inc"
 #include "TrackInspector.inc"
 #include "TrackUiCheck.inc"
@@ -499,6 +500,10 @@ private:
 // =============================================================================
 // MainComponent Implementation
 // =============================================================================
+void MainComponent::selectAutomationPoint(const juce::String& lane,const juce::String& point)
+{
+    selectTrack(lane,false);dock->activatePanel("effects");effectsPanel->selectPoint(point);
+}
 MainComponent::MainComponent()
 {
     setLookAndFeel(&look);
@@ -665,7 +670,7 @@ MainComponent::MainComponent()
     const int testArgument=arguments.indexOf("--track-ui-check");
     if(testArgument>=0 && testArgument+1<arguments.size())
         trackUiCheck=std::make_unique<TrackUiCheck>(*this,juce::File(arguments[testArgument+1].unquoted()),
-            testArgument+2<arguments.size()?juce::File(arguments[testArgument+2].unquoted()):juce::File(),arguments.contains("--effects-ui-check"));
+            testArgument+2<arguments.size()?juce::File(arguments[testArgument+2].unquoted()):juce::File(),arguments.contains("--effects-ui-check") || arguments.contains("--automation-ui-check"),arguments.contains("--automation-ui-check"));
 #endif
 }
 
@@ -1055,7 +1060,7 @@ MainComponent::Result MainComponent::execute(const juce::String& name, const juc
             });
     }
 
-    if(name.startsWith("movie.effect."))
+    if(name.startsWith("movie.automation.") || name.startsWith("movie.effect."))
     {
         juce::String error;
         if(!document.edit(name.fromFirstOccurrenceOf("movie.",false,false),a,error))return Result::failure("edit_rejected",error);
@@ -1257,6 +1262,12 @@ void MainComponent::registerCommands()
         {"gestureId",movie::object({{"type","string"}})}},{"trackId"});
     for(const auto* action:{"add","remove","reorder","parameter","enabled","bypass"})
         reg("movie.effect."+juce::String(action),"Effect "+juce::String(action),"Undoable track effect operation using stable owner/effect/parameter identities.",Effect::write,effectSchema);
+    auto automationSchema=schemaObj({{"laneId",movie::object({{"type","string"}})},{"trackId",movie::object({{"type","string"}})},
+        {"effectId",movie::object({{"type","string"}})},{"parameterId",movie::object({{"type","string"}})},
+        {"pointId",movie::object({{"type","string"}})},{"seconds",movie::object({{"type","number"}})},
+        {"value",movie::object({{"type","number"}})},{"shape",movie::object({{"type","string"}})},{"tension",movie::object({{"type","number"}})},{"visible",movie::object({{"type","boolean"}})}});
+    for(const auto* action:{"create","bind","point","removePoint","visible"})
+        reg("movie.automation."+juce::String(action),"Automation "+juce::String(action),"Undoable effect automation. Keyframe values use the target parameter's units; storage remains normalized.",Effect::write,automationSchema);
     reg("movie.track.get", "Get Track", "Returns a track by stable identity.", Effect::read,
         schemaObj({{"trackId",movie::object({{"type","string"}})}},{"trackId"}));
     auto trackSchema=schemaObj({

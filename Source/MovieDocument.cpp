@@ -1,4 +1,5 @@
 #include "MovieDocument.h"
+#include "MovieAutomation.h"
 #include <creation/timeline/TimelineEditOps.h>
 #include <set>
 
@@ -154,7 +155,9 @@ bool Document::edit(const juce::String& command,const juce::var& a,juce::String&
     auto s=sequence;
     const auto index=s.findClip(a["clipId"].toString());
     auto fail=[&](const juce::String& why){error=why;return false;};
-    if(command.startsWith("effect."))
+    if(command.startsWith("automation."))
+    {if(!editAutomation(s,command.fromFirstOccurrenceOf("automation.",false,false),a,error))return false;}
+    else if(command.startsWith("effect."))
     {
         const auto action=command.fromFirstOccurrenceOf("effect.",false,false);
         const int ti=s.findTrack(a["trackId"].toString());if(ti<0)return fail("Select a valid track first.");

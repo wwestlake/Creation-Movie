@@ -1,5 +1,6 @@
 #pragma once
 #include "MovieDocument.h"
+#include "MovieAutomation.h"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <atomic>
 #include <map>
@@ -37,6 +38,7 @@ private:
     std::vector<std::vector<size_t>> trackClips;
     std::vector<std::pair<double,double>> spans;
     std::vector<AudioEffects> audioEffects;
+    EffectAutomation automation;
     std::vector<float> scratch,trackBuffer,discard;
     double nextAudioTime=-1;int audioRate=0;
 };
