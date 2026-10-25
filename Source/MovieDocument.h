@@ -28,6 +28,7 @@ struct Media
 struct Track : creation::timeline::TimelineTrack
 {
     juce::String type { "video" };
+    bool automationVisible = true;
     bool enabled = true, armed = false, monitoring = false, legacyMixed = false;
     juce::var source;
     juce::String targetTrackId, targetClipId, targetEffectId, parameterId;

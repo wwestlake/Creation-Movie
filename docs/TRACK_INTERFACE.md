@@ -82,3 +82,8 @@ Release builds. Existing user projects are not used as test fixtures.
 
 The document tests and `scripts/Check-MovieLifecycle.py --tracks` remain focused
 regression checks for migration, persistence, playback and export.
+
+Milestone 4 adds automation keyframe lanes and editing through the Effects dock;
+see [Automation](AUTOMATION.md). Historical "stored only" limitations above
+are superseded for resolved effect-parameter targets; capture/source monitoring
+and effects-track routing remain deferred.

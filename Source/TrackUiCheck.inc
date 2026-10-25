@@ -4,11 +4,52 @@
 class MainComponent::TrackUiCheck final : private juce::Timer
 {
 public:
-    TrackUiCheck(MainComponent& component,juce::File destination,juce::File media,bool effects=false):owner(component),output(std::move(destination)),inputVideo(std::move(media)),effectsMode(effects)
+    TrackUiCheck(MainComponent& component,juce::File destination,juce::File media,bool effects=false,bool automated=false):owner(component),output(std::move(destination)),inputVideo(std::move(media)),effectsMode(effects),automationMode(automated)
     {
         original=owner.session.getProjectId();output.createDirectory();startTimer(250);
     }
 private:
+    void openCurve(const juce::String& track,const char* type,const char* parameter)
+    {
+        owner.selectTrack(track,false);owner.dock->activatePanel("effects");auto& panel=*owner.effectsPanel;
+        const int i=owner.document.sequence.findTrack(track);for(const auto& e:owner.document.sequence.tracks[(size_t)i].effects)if(e.type==type)panel.selected=e.id;
+        panel.sync();for(auto* button:panel.automateButtons)if(button->getComponentID()==parameter){button->triggerClick();return;}
+        throw std::runtime_error("Missing Automate parameter widget");
+    }
+    void verifyAutomationMedia()
+    {
+        const auto sequence=owner.document.sequence;auto manual=sequence;for(auto& t:manual.tracks)if(t.type=="automation")t.enabled=false;
+        movie::Renderer reference(sequence),baseline(manual);const double time=15*sequence.frameSeconds();
+        const auto expected=reference.video(time,640,360),plain=baseline.video(time,640,360);
+        movie::MediaReader videoReader(output.getChildFile("automation-sample.mkv").createInputStream(),"automation-sample.mkv",movie::MediaReader::Kind::video);
+        // Matroska timestamps are millisecond-quantized. Sample inside the encoded
+        // frame interval, while the preview renderer evaluates its exact frame start.
+        const auto decoded=videoReader.videoAt(time+sequence.frameSeconds()*.5,640,360);int pixelError=0;double difference=0;
+        for(int y=0;y<360;y+=4)for(int x=0;x<640;x+=4)
+        {const auto a=expected.getPixelAt(x,y),b=decoded.getPixelAt(x,y),c=plain.getPixelAt(x,y);pixelError=std::max({pixelError,std::abs(a.getRed()-b.getRed()),std::abs(a.getGreen()-b.getGreen()),std::abs(a.getBlue()-b.getBlue())});difference+=std::abs(a.getRed()-c.getRed());}
+        require(pixelError<=1 && difference>1000,("Automated video export/pixel check: error="+juce::String(pixelError)+", difference="+juce::String(difference)).toRawUTF8());
+        movie::MediaReader audioReader(output.getChildFile("automation-sample.mkv").createInputStream(),"automation-sample.mkv",movie::MediaReader::Kind::audio);
+        std::vector<float> samples(2048),decodedAudio(2048);reference.audio(.5,1024,48000,samples.data());audioReader.audioAt(.5,1024,48000,decodedAudio.data());
+        double audioError=0;for(size_t n=0;n<samples.size();++n)audioError=std::max(audioError,(double)std::abs(samples[n]-decodedAudio[n]));require(audioError<.0001,("Automated audio export differs from seek renderer: "+juce::String(audioError,9)).toRawUTF8());
+        movie::Renderer continuous(sequence),seeked(sequence);std::vector<float> block(2048),sought(2048);
+        for(int offset=0;offset<24000;){const int count=std::min(1024,24000-offset);continuous.audio((double)offset/48000,count,48000,block.data());offset+=count;}
+        continuous.audio(.5,1024,48000,block.data());seeked.audio(.5,1024,48000,sought.data());double seekError=0;
+        for(size_t n=0;n<block.size();++n)seekError=std::max(seekError,(double)std::abs(block[n]-sought[n]));require(seekError<.0001,"Automated filter seek differs from continuous playback");
+        seeked.audio(0,1024,48000,sought.data());movie::Renderer restarted(sequence);restarted.audio(0,1024,48000,block.data());double loopError=0;
+        for(size_t n=0;n<block.size();++n)loopError=std::max(loopError,(double)std::abs(block[n]-sought[n]));// Separate processor state from lossy source decoder priming. The WAV lane
+        // must wrap exactly; any full-mix difference must be explained by AAC alone.
+        auto waveOnly=sequence,codecOnly=sequence;
+        for(auto& t:waveOnly.tracks)t.enabled=t.id==audio || (t.type=="automation" && t.targetTrackId==audio);
+        for(auto& t:codecOnly.tracks)t.enabled=t.id==video;
+        movie::Renderer waveWrap(waveOnly),waveStart(waveOnly),codecWrap(codecOnly),codecStart(codecOnly);
+        waveWrap.audio(.5,1024,48000,sought.data());waveWrap.audio(0,1024,48000,sought.data());waveStart.audio(0,1024,48000,block.data());double waveLoopError=0;
+        for(size_t n=0;n<block.size();++n)waveLoopError=std::max(waveLoopError,(double)std::abs(block[n]-sought[n]));
+        codecWrap.audio(.5,1024,48000,sought.data());codecWrap.audio(0,1024,48000,sought.data());codecStart.audio(0,1024,48000,block.data());double codecLoopError=0;
+        for(size_t n=0;n<block.size();++n)codecLoopError=std::max(codecLoopError,(double)std::abs(block[n]-sought[n]));
+        require(waveLoopError<.000001 && loopError<=codecLoopError+.00001 && loopError<.001,"Automation adds loop error beyond source decoder priming");
+        output.getChildFile("automation-media-results.json").replaceWithText(juce::JSON::toString(movie::object({{"pixelDifference",difference},{"exportPixelError",pixelError},{"exportAudioError",audioError},{"seekError",seekError},{"loopError",loopError},{"waveLoopError",waveLoopError},{"codecLoopError",codecLoopError}})));
+        passed("Automated pixels differ from manual values; decoded exports match; active filter seeking and loop-style wraps match continuous/restarted renderers");
+    }
     void insertEffect(const char* type)
     {
         auto& panel=*owner.effectsPanel;const auto found=std::find(panel.available.begin(),panel.available.end(),type);
@@ -211,7 +252,54 @@ private:
                 case 41:
                     require(output.getChildFile("effects-sample.mp4").getSize()>1000,"Processed MP4 export failed");
                     passed("Effects configuration preserves identities after save/reopen; processed MP4 and FFV1 samples exported");
+                    if(automationMode){step=50;break;}
                     record();owner.runUi("movie.project.open",movie::object({{"projectId",original},{"discardChanges",true}}));step=90;break;
+                case 50:openCurve(video,"video.colour","brightness");break;
+                case 51:
+                    require(owner.document.sequence.tracks.back().type=="automation","Automate widget did not create a lane");
+                    automationLane=owner.selectedTrack;owner.effectsPanel->automation.value.setValue(.3);owner.effectsPanel->automation.apply.triggerClick();break;
+                case 52:
+                    owner.playback.seek(1);owner.effectsPanel->automation.value.setValue(.9);owner.effectsPanel->automation.add.triggerClick();break;
+                case 53:
+                    require(owner.document.sequence.tracks.back().points.size()==2,"Keyframe add widget failed");
+                    owner.effectsPanel->automation.points.setSelectedId(2,juce::sendNotificationSync);owner.effectsPanel->automation.time.setValue(.8);owner.effectsPanel->automation.value.setValue(.8);owner.effectsPanel->automation.apply.triggerClick();break;
+                case 54:
+                    require(std::abs(owner.document.sequence.tracks.back().points.back().seconds-.8)<1e-9,"Precise keyframe time edit failed");
+                    owner.effectsPanel->automation.remove.triggerClick();break;
+                case 55:
+                    require(owner.document.sequence.tracks.back().points.size()==1,"Keyframe remove widget failed");owner.runUi("movie.timeline.undo");owner.runUi("movie.timeline.redo");owner.runUi("movie.timeline.undo");
+                    owner.effectsPanel->automation.visible.triggerClick();break;
+                case 56:
+                    require(!owner.document.sequence.tracks.back().automationVisible,"Hide lane widget failed");owner.effectsPanel->automation.visible.triggerClick();break;
+                case 57:
+                {
+                    const int i=owner.document.sequence.findTrack(automationLane);auto& t=*owner.timeline;
+                    owner.pixelsPerSecond=200;owner.visibleStart=0;t.scroll.setCurrentRangeStart(0);t.offset=0;
+                    t.scroll.setCurrentRangeStart(std::max(0,t.laneY(i)-t.top));t.offset=t.scroll.getCurrentRangeStart();
+                    const auto& lane=owner.document.sequence.tracks[(size_t)i];const auto point=lane.points.back();
+                    const juce::Point<float> start{(float)(t.headerW+point.seconds*owner.pixelsPerSecond),(float)(t.laneY(i)+lane.heightPixels-10-point.value*(lane.heightPixels-20))};
+                    const auto end=start+juce::Point<float>(20,5);t.mouseDown(event(start,start,true));t.mouseDrag(event(end,start,true));t.mouseUp(event(end,start,false));
+                    require(owner.document.sequence.tracks[(size_t)i].points.back().seconds>.85,"Timeline keyframe drag failed");
+                    passed("Automation parameter buttons, exact time/value, point removal/undo/redo, visibility and synthesized timeline point dragging work");
+                    openCurve(audio,"audio.gain","gain");break;
+                }
+                case 58:owner.effectsPanel->automation.value.setValue(.05);owner.effectsPanel->automation.apply.triggerClick();break;
+                case 59:owner.playback.seek(1);owner.effectsPanel->automation.value.setValue(.8);owner.effectsPanel->automation.add.triggerClick();break;
+                case 60:openCurve(audio,"audio.filter","cutoff");break;
+                case 61:owner.effectsPanel->automation.value.setValue(200);owner.effectsPanel->automation.apply.triggerClick();break;
+                case 62:owner.playback.seek(1);owner.effectsPanel->automation.value.setValue(1500);owner.effectsPanel->automation.add.triggerClick();break;
+                case 63:saved=juce::JSON::toString(owner.document.sequence.toJson());owner.runUi("movie.project.save");break;
+                case 64:owner.runUi("movie.project.open",movie::object({{"projectId",project}}));break;
+                case 65:
+                    require(saved==juce::JSON::toString(owner.document.sequence.toJson()),"Automation configuration changed on reopen");
+                    owner.selectTrack(automationLane,false);owner.timeline->reveal(automationLane);owner.dock->activatePanel("effects");snapshot("automation-ui-demo.png");
+                    owner.runUi("movie.export",movie::object({{"path",output.getChildFile("automation-sample.mkv").getFullPathName()},{"preset","ffv1"}}));break;
+                case 66:verifyAutomationMedia();owner.runUi("movie.export",movie::object({{"path",output.getChildFile("automation-sample.mp4").getFullPathName()},{"preset","mp4"}}));break;
+                case 67:owner.playback.seek(.5);owner.playback.play(true);break;
+                case 68:require(owner.playback.position()>.5 && owner.playback.error().isEmpty(),"Automated transport failed to advance");owner.playback.play(false);owner.playback.seek(0);owner.playback.play(true);break;
+                case 69:
+                    require(owner.playback.position()>0 && owner.playback.error().isEmpty(),"Automated playback restart failed");owner.playback.play(false);
+                    passed("Automation survives VFS reopen, exports processed FFV1/MP4 and plays/restarts through the existing transport");record();owner.runUi("movie.project.open",movie::object({{"projectId",original},{"discardChanges",true}}));step=90;break;
                 case 90:stopTimer();owner.requestQuit();break;
             }
         }
@@ -222,6 +310,6 @@ private:
             owner.runUi("movie.project.open",movie::object({{"projectId",original},{"discardChanges",true}}));step=90;
         }
     }
-    MainComponent& owner;juce::File output,inputVideo;juce::String original,project,video,audio,image,saved,error;juce::Array<juce::var> checks;int step=0;bool effectsMode=false;
+    MainComponent& owner;juce::File output,inputVideo;juce::String original,project,video,audio,image,saved,error;juce::Array<juce::var> checks;int step=0;bool effectsMode=false,automationMode=false;juce::String automationLane;
 };
 #endif

@@ -71,9 +71,10 @@ public:
                 const int ci=owner.document.sequence.findClip(t.targetClipId);
                 if(ci>=0)target+=" / "+owner.document.sequence.clips[(size_t)ci].displayName;
             }
-            if(t.targetEffectId.isNotEmpty())target+=" / stored effect";
+            if(t.targetEffectId.isNotEmpty())
+            {const movie::Effect* e=nullptr;if(movie::automationParameter(owner.document.sequence,t,&e))target+=" / "+movie::effectDefinition(e->type)->name;else target+=" / unresolved effect";}
             if(t.parameterId.isNotEmpty())target+=" / "+t.parameterId;
-            automation.setText("Stored target: "+target+"\n"+juce::String(t.points.size())+" curve points\nAutomation playback and curve editing are not available yet.",juce::dontSendNotification);
+            automation.setText("Stored target: "+target+"\n"+juce::String(t.points.size())+" curve points\nChoose Effects to edit keyframes. Unresolved legacy targets remain inactive.",juce::dontSendNotification);
             heading.setText(t.legacyMixed?"Track Inspector / legacy mixed media":"Track Inspector",juce::dontSendNotification);
         }
         else {trackId={};heading.setText("Select a track to configure it",juce::dontSendNotification);}

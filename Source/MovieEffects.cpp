@@ -140,40 +140,64 @@ void processVideoEffects(juce::Image& frame,const std::vector<Effect>& chain)
         }
     }
 }
+double ParameterCurve::at(double seconds) const
+{
+    if(!points || points->empty() || !parameter)return parameter?parameter->initial:0;
+    const auto& curve=*points;
+    auto next=std::upper_bound(curve.begin(),curve.end(),seconds,[](double t,const auto& p){return t<p.seconds;});
+    float value;
+    if(next==curve.begin())value=curve.front().value;
+    else if(next==curve.end())value=curve.back().value;
+    else if(parameter->kind=="choice")value=(next-1)->value;
+    else value=creation::timeline::evaluateAutomationSegment(*(next-1),*next,seconds);
+    const double actual=parameter->minimum+juce::jlimit(0.0,1.0,(double)value)*(parameter->maximum-parameter->minimum);
+    return parameter->kind=="choice"?std::round(actual):actual;
+}
 void AudioEffects::reset(){for(auto& s:states){s.second->left.reset();s.second->right.reset();}}
-void AudioEffects::process(float* data,int count,int rate,double time,double duration,const std::vector<Effect>& chain)
+void AudioEffects::process(float* data,int count,int rate,double time,double duration,const std::vector<Effect>& chain,const EffectAutomation* automation,double timelineTime)
 {
     juce::ScopedNoDenormals noDenormals;
     for(const auto& e:chain)
     {
         if(!e.enabled || e.bypassed || !e.type.startsWith("audio."))continue;
+        const std::map<juce::String,ParameterCurve>* curves=nullptr;
+        if(automation){const auto found=automation->find(e.id);if(found!=automation->end())curves=&found->second;}
+        auto curve=[&](const char* id)->const ParameterCurve*{if(!curves)return nullptr;auto it=curves->find(id);return it==curves->end()?nullptr:&it->second;};
+        // Resolve curve and default lookups once per effect/block, never per sample.
         if(e.type=="audio.filter")
         {
             auto& state=states[e.id];if(!state)state=std::make_unique<State>();
-            const auto cutoff=std::min(e.value("cutoff"),rate*.45),mode=e.value("mode");
-            if(state->rate!=rate || state->cutoff!=cutoff || state->mode!=mode)
+            const auto* cutoffCurve=curve("cutoff");const auto* modeCurve=curve("mode");
+            const double manualCutoff=e.value("cutoff"),manualMode=e.value("mode");
+            for(int i=0;i<count;++i)
             {
-                const auto coefficients=mode==0?juce::IIRCoefficients::makeLowPass(rate,cutoff):juce::IIRCoefficients::makeHighPass(rate,cutoff);
-                state->left.setCoefficients(coefficients);state->right.setCoefficients(coefficients);state->rate=rate;state->cutoff=cutoff;state->mode=mode;
+                const double t=timelineTime+(double)i/rate;
+                const double cutoff=std::min(cutoffCurve?cutoffCurve->at(t):manualCutoff,rate*.45),mode=modeCurve?modeCurve->at(t):manualMode;
+                if(state->rate!=rate || state->cutoff!=cutoff || state->mode!=mode)
+                {
+                    const auto coefficients=mode==0?juce::IIRCoefficients::makeLowPass(rate,cutoff):juce::IIRCoefficients::makeHighPass(rate,cutoff);
+                    state->left.setCoefficients(coefficients);state->right.setCoefficients(coefficients);state->rate=rate;state->cutoff=cutoff;state->mode=mode;
+                }
+                data[i*2]=state->left.processSingleSampleRaw(data[i*2]);data[i*2+1]=state->right.processSingleSampleRaw(data[i*2+1]);
             }
-            for(int i=0;i<count;++i){data[i*2]=state->left.processSingleSampleRaw(data[i*2]);data[i*2+1]=state->right.processSingleSampleRaw(data[i*2+1]);}
         }
         else
         {
-            float left=1,right=1;
-            if(e.type=="audio.gain")left=right=(float)e.value("gain");
-            if(e.type=="audio.balance"){const float pan=(float)e.value("balance");left=std::min(1.0f,1-pan);right=std::min(1.0f,1+pan);}
-            const bool fading=e.type=="audio.fade";
+            const bool gaining=e.type=="audio.gain",balancing=e.type=="audio.balance",fading=e.type=="audio.fade";
+            const auto* gainCurve=curve("gain");const auto* panCurve=curve("balance");const auto* inCurve=curve("in");const auto* outCurve=curve("out");
+            const double gain=gaining?e.value("gain"):1,pan=balancing?e.value("balance"):0;
             const double fadeIn=fading?e.value("in"):0,fadeOut=fading?e.value("out"):0;
             for(int i=0;i<count;++i)
             {
+                const double absolute=timelineTime+(double)i/rate;
+                const double g=gainCurve?gainCurve->at(absolute):gain,p=panCurve?panCurve->at(absolute):pan;
                 float fade=1;
                 if(fading)
                 {
-                    const double t=time+(double)i/rate;
-                    fade=(float)std::min(fadeIn>0?juce::jlimit(0.0,1.0,t/fadeIn):1.0,fadeOut>0?juce::jlimit(0.0,1.0,(duration-t)/fadeOut):1.0);
+                    const double t=time+(double)i/rate,in=inCurve?inCurve->at(absolute):fadeIn,out=outCurve?outCurve->at(absolute):fadeOut;
+                    fade=(float)std::min(in>0?juce::jlimit(0.0,1.0,t/in):1.0,out>0?juce::jlimit(0.0,1.0,(duration-t)/out):1.0);
                 }
-                data[i*2]*=left*fade;data[i*2+1]*=right*fade;
+                data[i*2]*=(float)(g*std::min(1.0,1-p))*fade;data[i*2+1]*=(float)(g*std::min(1.0,1+p))*fade;
             }
         }
     }

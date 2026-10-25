@@ -1,5 +1,20 @@
 # Agent Instructions
 
+## Repository workflow (Executive Director, October 24, 2026)
+
+Codex is the designated working agent for the entire Creation Suite repository
+structure until the Executive Director assigns it elsewhere. Do not request
+ownership negotiations or handoffs from other LLMs.
+
+Begin each assignment from clean, integrated `master`, then create a fresh
+task-specific branch. Preserve unfinished work. Complete the implementation,
+build and focused checks; commit and publish a PR targeting `master` for the
+Executive Director to review/merge. Do not bypass required reviews/checks.
+Only after a successful merge, delete the completed branch, update the umbrella
+gitlink through its PR process, and verify clean repositories. An open PR is
+ready for review, not an integrated milestone. Do not start the next milestone
+before its prerequisite work is merged.
+
 ## Build Output
 
 - Build in `build/` inside this shared CreationMovie checkout. The old `D:\000 Creation Movie` checkout was retired in the October 17 workspace consolidation.

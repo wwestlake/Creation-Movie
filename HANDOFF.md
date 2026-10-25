@@ -1,5 +1,83 @@
 # Djehuti Movie implementation handoff
 
+## October 25 - Milestone 4: effects automation
+
+Started from Movie master `b126ded` (merged Milestones 1-3, PR #36) on a fresh
+`feat/movie-effects-automation` branch. Publication is for review through a PR;
+this milestone is not integrated while that PR remains open. No Milestone 5 work.
+
+Existing automation tracks, stable target IDs, shared normalized AutomationPoint
+storage and shared segment interpolation are reused. No competing store or
+engine. Metadata resolves target parameters; the existing audio processors apply
+overrides per sample, and the existing video chain applies them per frame.
+Preview and export share the same evaluator and production Renderer.
+
+The existing Effects dock adds Automate buttons and a scrollable keyframe editor
+with precise time/value, outgoing shape/tension, add/remove and undoable edits.
+Timeline lanes draw the evaluated curve; double-click adds points, point click
+selects the inspector key, and drag commits time/value on release. Visibility is
+saved independently of enabled/evaluation state. Existing schema 4 remains;
+versions 2/3/4 open, missing visibility defaults true, stored key IDs and normalized
+float values survive exact save/reopen. Unresolved legacy bindings remain stored
+and inactive. New duplicate parameter bindings are rejected. Removing a bound
+effect is rejected until its lane is explicitly removed, preserving curves.
+
+Audio: gain/balance/cutoff/filter mode plus fades. Video: brightness/contrast/
+saturation/RGB, opacity, crop, scale and position. Choices step; other curves
+reuse shared interpolation. Opposing crop edges are proportionally limited only
+in evaluated values when they would eliminate the source region. Effect/track
+reordering preserves targets. Bypass preserves curves and resumes at current time.
+
+Practical checks exposed and fixed two existing Movie decoder issues needed for
+correct automated output: millisecond-rounded PCM packet timestamps caused
+sample gaps/overlap, and backward seeking retained an empty cache's old start,
+returning silence. Continuous sample positions now tolerate timestamp rounding;
+seek resets the cache clock/index. Larger timestamp discontinuities still anchor
+to PTS. No Station/shared source was changed.
+
+Limits: existing CPU 8-bit SDR throughput; bounded one-second stateful-filter
+preroll; normalized float precision; no click-free promise for abrupt step/mode
+changes or rapid manual document edits. No new automatic loop transport toggle;
+renderer time wraps and existing transport seeks/restarts are exercised. Native
+mouse/keyboard delivery and subjective listening/lip sync remain unverified.
+Existing shadow warnings remain. Effects-track routing and capture are deferred.
+See docs/AUTOMATION.md for commands, UI and compatibility details.
+
+Validation (final implementation):
+
+- Single-worker Debug app + MovieDocumentTests build passed; existing shadow
+  warnings remain (`build/automation-build.log`). Focused document, DSP/pixel,
+  keyframe/curve and compatibility tests passed (`automation-unit-results.log`).
+- Representative Debug measurements: 720p colour/opacity/transform 55.66 ms/frame,
+  saturation workload 146.67 ms/frame, one second stereo sample-automated 48 kHz
+  cutoff 52.29 ms. Local measurements vary with machine load, not Release claims.
+- All 14 mounted-window groups passed in `build/automation-check-delivery/`.
+  Real controls exercised parameter targeting, precise time/value, removal,
+  undo/redo, visibility and synthesized point dragging; actual transport advanced
+  and restarted. `automation-ui-demo.png` was visually inspected. No native input
+  claim. Saved VFS demonstration: `148b5b87ea364e53b6f935bddd549ff9`.
+- Processed `automation-sample.mkv` and `automation-sample.mp4` exported. Metrics:
+  video difference from manual 127254; decoded FFV1 sampled pixel error 0;
+  maximum PCM sample error 0.0000152495; active automated filter seek error 0;
+  generated WAV automation loop error 0. Full-mix wrap error 0.000209415 and
+  isolated AAC-source wrap error 0.000206893 expose lossy decoder priming, with
+  no claim of bit-exact AAC seeks. Video comparison samples inside the encoded
+  frame interval to accommodate Matroska's millisecond timestamp rounding.
+- All ten lifecycle/track regression groups passed, including v2 migration,
+  decoded before/after equivalence, real export, failed open/save and normal
+  close (`build/automation-regression.log`). Original project was restored;
+  Movie closed and the shared VFS service was preserved.
+- Suite-wide requirements check still fails on the PRE-EXISTING Station source
+  pin's CS_SIGNAL_LAB_RUNTIME / CS_SIGNAL_LAB_NODE_LIBRARY references (R3).
+  R1/R2/R4 pass. This milestone changes no Station/shared source and does not
+  suppress the check. See `build/automation-suite-requirements.log`.
+
+Changed files: Movie automation model/editor/tests/docs, existing document,
+track timeline/inspector, effect parameter/DSP and renderer/decoder adapters,
+command registration, CMake and app workflow instructions. Generated media/logs
+remain ignored local evidence. The PR is the integration boundary: do not call
+this milestone integrated or delete its branch before its actual merge.
+
 ## October 24 - Milestone 3: functional effects
 
 Implemented on `feature/shared-track-document`; local commit only, no merge or

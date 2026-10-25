@@ -2,6 +2,7 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <map>
+#include <creation/timeline/TimelineTypes.h>
 namespace movie
 {
 struct EffectParameter
@@ -33,6 +34,14 @@ bool parseEffects(const juce::var&,const juce::String& owner,const juce::String&
 // Same parameter map is the future automation override boundary. No UI widgets
 // own parameter identities or effect mathematics.
 void processVideoEffects(juce::Image&,const std::vector<Effect>&);
+// Curves reference an immutable renderer snapshot. Values are normalized in storage.
+struct ParameterCurve
+{
+    const std::vector<creation::timeline::AutomationPoint>* points=nullptr;
+    const EffectParameter* parameter=nullptr;
+    double at(double seconds) const;
+};
+using EffectAutomation=std::map<juce::String,std::map<juce::String,ParameterCurve>>;
 class AudioEffects
 {
 public:
@@ -42,7 +51,7 @@ public:
     AudioEffects(AudioEffects&&) noexcept=default;
     AudioEffects& operator=(AudioEffects&&) noexcept=default;
     void reset();
-    void process(float* stereo,int count,int sampleRate,double localTime,double duration,const std::vector<Effect>&);
+    void process(float* stereo,int count,int sampleRate,double localTime,double duration,const std::vector<Effect>&,const EffectAutomation* automation=nullptr,double timelineTime=0);
 private:
     struct State {juce::IIRFilter left,right;int rate=0;double cutoff=0,mode=-1;};
     std::map<juce::String,std::unique_ptr<State>> states;
