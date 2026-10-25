@@ -172,7 +172,7 @@ private:
 void MainComponent::selectTrack(const juce::String& id,bool showInspector)
 {
     if(document.sequence.findTrack(id)<0)return;
-    selectedTrack=id;selectedClip={};
+    selectedTransition={};selectedTrack=id;selectedClip={};
     if(trackInspector)trackInspector->sync();
     if(effectsPanel)effectsPanel->sync();
     if(inspector)inspector->syncFromSelection();

@@ -1,0 +1,19 @@
+#pragma once
+#include <creation/litesemrag/Cards.h>
+namespace movie
+{
+inline juce::Array<creation::litesemrag::Card> transitionCards()
+{
+    juce::Array<creation::litesemrag::Card> result;
+    auto add=[&](const char* id,const char* title,const char* text){creation::litesemrag::Card c;c.id=id;c.title=title;c.text=text;c.kind="tool";c.tokens={"movie","transition","dissolve","wipe","crossfade","handles","fade","numerical"};c.priority=80;c.source="Movie/Source/MovieTransitionCards.h";result.add(c);};
+    add("movie.transitions.contract","Movie transition types, units and errors",R"CARD(
+Use movie.transition.catalog for definitions; list/get query saved objects. Types: video.dissolve, video.black, video.wipe, audio.crossfade. Video curves linear/sCurve/power/bezier, tension -1..1; audio curves linear/equalPower. Wipe directions leftToRight/rightToLeft/topToBottom/bottomToTop, softness 0..1 of frame axis. Black midpoint .01.. .99. Start/duration are exact seconds, duration >=1/48000, end <=86400. End is derived/read-only. Use actual track and clip IDs, never array indexes. Read movie.track.list and the sequence to identify clips.
+Each pair must be on one compatible track, outgoing earlier than incoming, with an adjacent cut or existing overlap, no gap. The interval must cover all existing overlap, remain within the pair's outer bounds and have real source material for both clips throughout. Incoming preroll needs sourceIn; outgoing postroll must remain in media duration. No clip time/source edits happen implicitly. Reject third clips or same-domain overlapping transitions. Video and audio transitions are independent and may share an interval. Still images/titles are unsupported transition sources. Removing a clip removes its transitions in the same undo transaction; invalidating move/trim edits reject atomically. No source repetition or silence is invented to supply handles.
+)CARD");
+    add("movie.transitions.workflow","Create, edit, save and export Movie transitions",R"CARD(
+Commands: movie.transition.create {trackId,outgoing,incoming,type,start,duration,curve,direction,softness,midpoint,tension}; omitted optional properties use catalog defaults. create returns the transition with its stable id. movie.transition.update {transitionId,...changed properties}; movie.transition.remove {transitionId}; movie.transition.validate accepts create properties or transitionId plus update properties and performs a read-only dry run. list returns all definitions; get requires transitionId. GUI and agents use the same undoable document operations. On edit_rejected/invalid_transition inspect the message; do not retry by moving unrelated clips or extending source ranges without an explicit instruction. Exact numerical editing is authoritative. Transitions process after clip gain/opacity and before track effects and effect automation.
+Example with already placed same-track video clips V1,V2 on VT, adjacent at 2s, and audio clips A1,A2 on AT, also adjacent at 2s, with >=.5s incoming/outgoing source handles: validate then create {trackId:VT,outgoing:V1,incoming:V2,type:"video.dissolve",start:1.5,duration:1,curve:"linear"}; retain returned id D. Create {trackId:AT,outgoing:A1,incoming:A2,type:"audio.crossfade",start:1.5,duration:1,curve:"equalPower"}; retain id F. Update D and F with start:1.75,duration:.5 to preserve centering. Query both and confirm their end=2.25. Call movie.project.save and wait for its completed job, then movie.export {path:<user-selected absolute output>,preset:"mp4"} and wait for that job. Numerical values in real calls must be valid JSON numbers; substitute actual IDs. Never claim export succeeded merely because a job was queued. For a wipe elsewhere use another compatible pair and type video.wipe, direction leftToRight, softness .1 after validation. Curve/timing changes do not alter saved clips.
+)CARD");
+    return result;
+}
+}

@@ -7,8 +7,9 @@ public:
 #endif
     explicit Timeline(MainComponent& o) : owner(o)
     {
-        addAndMakeVisible(add); addAndMakeVisible(remove); addAndMakeVisible(scroll);
+        addAndMakeVisible(add); addAndMakeVisible(remove);addAndMakeVisible(addTransition); addAndMakeVisible(scroll);
         addAndMakeVisible(rename); rename.setVisible(false);
+        addTransition.onClick=[this]{owner.showTransition({},owner.selectedClip);};
         add.onClick=[this]{owner.addTrackMenu(&add);};
         remove.onClick=[this]{owner.removeTrack(owner.selectedTrack);};
         scroll.addListener(this);
@@ -29,6 +30,7 @@ public:
     void resized() override
     {
         add.setBounds(6,3,110,25); remove.setBounds(122,3,108,25);
+        addTransition.setBounds(242,3,110,25);
         scroll.setBounds(getWidth()-14,top,14,std::max(0,getHeight()-top)); sync();
     }
     int laneY(int index) const
@@ -76,7 +78,7 @@ public:
     {
         g.fillAll(juce::Colour(0xff0f1623));
         g.setColour(juce::Colours::silver);g.setFont(juce::FontOptions(11));
-        g.drawText("Drag headers to reorder / double-click to rename",242,3,std::max(0,getWidth()-250),25,juce::Justification::centredLeft);
+        g.drawText("Drag headers to reorder / double-click to rename",358,3,std::max(0,getWidth()-366),25,juce::Justification::centredLeft);
         auto bounds=getLocalBounds().withTrimmedRight(14);
         const double pps=std::max(5.0,owner.pixelsPerSecond);
         const double step=pps>80?0.5:pps>30?1.0:pps>12?5.0:10.0;
@@ -154,6 +156,14 @@ public:
             g.setFont(juce::FontOptions(12));g.drawText(c.displayName,box.reduced(6),juce::Justification::centredLeft,true);
             g.restoreState();
         }
+        for(const auto& tr:seq.transitions)
+        {
+            const auto box=transitionBox(tr);if(box.getBottom()<top || box.getY()>getHeight())continue;
+            g.saveState();g.reduceClipRegion(headerW,top,std::max(0,bounds.getWidth()-headerW),std::max(0,getHeight()-top));
+            g.setColour(tr.id==owner.selectedTransition?juce::Colours::yellow:juce::Colours::orange);g.fillRoundedRectangle(box.toFloat(),3);
+            g.setColour(juce::Colours::black);g.drawLine((float)box.getX(),(float)box.getY(),(float)box.getRight(),(float)box.getBottom());g.drawLine((float)box.getX(),(float)box.getBottom(),(float)box.getRight(),(float)box.getY());
+            g.setFont(juce::FontOptions(10));g.drawText(movie::transitionName(tr.type)+" "+juce::String(tr.duration,3)+"s",box.reduced(6,0),juce::Justification::centred,true);g.restoreState();
+        }
         if(dropIndex>=0)
         {
             g.setColour(juce::Colours::orange);g.fillRect(0,laneY(dropIndex),bounds.getWidth(),3);
@@ -171,6 +181,7 @@ public:
     }
     void mouseDoubleClick(const juce::MouseEvent& e) override
     {
+        if(auto* tr=transitionAt(e.position)){owner.showTransition(tr->id);return;}
         const int i=laneAt(e.y);
         if(e.x<headerW && i>=0)beginRename();
         else if(i>=0 && owner.document.sequence.tracks[(size_t)i].type=="automation")
@@ -181,7 +192,7 @@ public:
     }
     void mouseDown(const juce::MouseEvent& e) override
     {
-        grabKeyboardFocus();dragClip={};dragTrack={};dragPoint={};dropIndex=-1;
+        grabKeyboardFocus();dragClip={};dragTrack={};dragPoint={};dragTransition={};dropIndex=-1;
         if(e.y<top)
         {
             if(e.x>=headerW)owner.runUi("movie.transport.seek",movie::object({{"time",timeAt(e.x)}}));
@@ -203,6 +214,17 @@ public:
             else dragTrack=t.id;
             return;
         }
+        if(auto* tr=transitionAt(e.position))
+        {
+            const auto id=tr->id;transitionStart=tr->start;transitionDuration=tr->duration;transitionOffset=timeAt(e.x)-tr->start;
+            const auto box=transitionBox(*tr);transitionEdge=e.x-box.getX()<7?-1:box.getRight()-e.x<7?1:0;owner.showTransition(id);dragTransition=id;
+            if(e.mods.isPopupMenu())
+            {
+                dragTransition={};juce::PopupMenu menu;menu.addItem(1,"Transition properties");menu.addItem(2,"Delete transition");const juce::Component::SafePointer<MainComponent> safe(&owner);
+                menu.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea({e.getScreenX(),e.getScreenY(),1,1}),[safe,id](int choice){if(!safe)return;if(choice==1)safe->showTransition(id);if(choice==2)safe->runUi("movie.transition.remove",movie::object({{"transitionId",id}}));});
+            }
+            return;
+        }
         owner.selectTrack(t.id,false);
         const auto time=timeAt(e.x);
         if(t.type=="automation")
@@ -221,10 +243,11 @@ public:
                 owner.selectClip(c.id);dragClip=c.id;dragOffset=time-c.startSeconds;
                 if(e.mods.isPopupMenu())
                 {
-                    juce::PopupMenu m;m.addItem(1,"Split Clip Here");m.addItem(2,"Delete Clip");m.addItem(3,"Ripple Delete Clip");
+                    juce::PopupMenu m;m.addItem(1,"Split Clip Here");m.addItem(2,"Delete Clip");m.addItem(3,"Ripple Delete Clip");m.addItem(4,"Add transition...");
                     const juce::Component::SafePointer<MainComponent> safe(&owner);
                     m.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea({e.getScreenX(),e.getScreenY(),1,1}),[safe,id=c.id,time](int choice){
                         if(!safe)return;
+                        if(choice==4)safe->showTransition({},id);
                         if(choice==1)safe->runUi("movie.timeline.split",movie::object({{"clipId",id},{"time",safe->document.sequence.snap(time)}}));
                         if(choice==2 || choice==3)safe->runUi("movie.timeline.remove",movie::object({{"clipId",id},{"ripple",choice==3}}));
                     });dragClip={};
@@ -255,6 +278,15 @@ public:
     }
     void mouseUp(const juce::MouseEvent& e) override
     {
+        if(dragTransition.isNotEmpty() && e.getDistanceFromDragStart()>3)
+        {
+            double start=transitionStart,duration=transitionDuration;const double edge=owner.document.sequence.snap(timeAt(e.x));
+            if(transitionEdge<0){start=edge;duration=transitionStart+transitionDuration-start;}
+            else if(transitionEdge>0)duration=edge-start;
+            else start=owner.document.sequence.snap(timeAt(e.x)-transitionOffset);
+            owner.runUi("movie.transition.update",movie::object({{"transitionId",dragTransition},{"start",start},{"duration",duration}}));
+        }
+        dragTransition={};
         if(dragPoint.isNotEmpty() && e.getDistanceFromDragStart()>3)
         {
             const int i=owner.document.sequence.findTrack(pointLane);
@@ -272,6 +304,13 @@ public:
         dragClip={};dragTrack={};dropIndex=-1;repaint();
     }
 private:
+    juce::Rectangle<int> transitionBox(const movie::Transition& tr)const
+    {
+        const int i=owner.document.sequence.findTrack(tr.trackId);if(i<0)return {};
+        return {headerW+(int)std::lround((tr.start-owner.visibleStart)*owner.pixelsPerSecond),laneY(i)+(tr.audio()?27:4),std::max(8,(int)std::lround(tr.duration*owner.pixelsPerSecond)),20};
+    }
+    const movie::Transition* transitionAt(juce::Point<float> point)const
+    {if(point.x<headerW || point.y<top)return nullptr;for(const auto& tr:owner.document.sequence.transitions)if(transitionBox(tr).toFloat().contains(point))return &tr;return nullptr;}
     double valueAt(int y,int lane,const movie::EffectParameter& p)const
     {
         const auto h=owner.document.sequence.tracks[(size_t)lane].heightPixels;
@@ -284,7 +323,8 @@ private:
     void finishRename(){const auto id=renameId,text=rename.getText();rename.setVisible(false);owner.runUi("movie.track.rename",movie::object({{"trackId",id},{"name",text}}));}
     MainComponent& owner;
     static constexpr int headerW=246,top=54;
-    juce::TextButton add{"+ Add Track"},remove{"Remove Track"};
+    juce::TextButton add{"+ Add Track"},remove{"Remove Track"},addTransition{"+ Transition"};
     juce::ScrollBar scroll{true};juce::TextEditor rename;
+    juce::String dragTransition;double transitionStart=0,transitionDuration=1,transitionOffset=0;int transitionEdge=0;
     juce::String dragClip,dragTrack,renameId,dragPoint,pointLane;double dragOffset=0,offset=0;int dropIndex=-1;
 };

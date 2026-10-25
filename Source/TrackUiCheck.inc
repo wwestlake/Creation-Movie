@@ -4,11 +4,12 @@
 class MainComponent::TrackUiCheck final : private juce::Timer
 {
 public:
-    TrackUiCheck(MainComponent& component,juce::File destination,juce::File media,bool effects=false,bool automated=false):owner(component),output(std::move(destination)),inputVideo(std::move(media)),effectsMode(effects),automationMode(automated)
+    TrackUiCheck(MainComponent& component,juce::File destination,juce::File media,bool effects=false,bool automated=false,bool transitions=false):owner(component),output(std::move(destination)),inputVideo(std::move(media)),effectsMode(effects),automationMode(automated),transitionMode(transitions)
     {
         original=owner.session.getProjectId();output.createDirectory();startTimer(250);
     }
 private:
+    #include "TransitionUiCheck.inc"
     void openCurve(const juce::String& track,const char* type,const char* parameter)
     {
         owner.selectTrack(track,false);owner.dock->activatePanel("effects");auto& panel=*owner.effectsPanel;
@@ -299,17 +300,18 @@ private:
                 case 68:require(owner.playback.position()>.5 && owner.playback.error().isEmpty(),"Automated transport failed to advance");owner.playback.play(false);owner.playback.seek(0);owner.playback.play(true);break;
                 case 69:
                     require(owner.playback.position()>0 && owner.playback.error().isEmpty(),"Automated playback restart failed");owner.playback.play(false);
-                    passed("Automation survives VFS reopen, exports processed FFV1/MP4 and plays/restarts through the existing transport");record();owner.runUi("movie.project.open",movie::object({{"projectId",original},{"discardChanges",true}}));step=90;break;
+                    passed("Automation survives VFS reopen, exports processed FFV1/MP4 and plays/restarts through the existing transport");if(transitionMode){step=100;break;}record();owner.runUi("movie.project.open",movie::object({{"projectId",original},{"discardChanges",true}}));step=90;break;
                 case 90:stopTimer();owner.requestQuit();break;
+                default:if(transitionMode && step>=101 && step<=130)transitionStep(step-1);break;
             }
         }
         catch(const std::exception& e)
         {
-            error=e.what();record();
+            error=juce::String(e.what())+" | Status: "+owner.lastStatus;record();
             if(step==91){stopTimer();return;}
             owner.runUi("movie.project.open",movie::object({{"projectId",original},{"discardChanges",true}}));step=90;
         }
     }
-    MainComponent& owner;juce::File output,inputVideo;juce::String original,project,video,audio,image,saved,error;juce::Array<juce::var> checks;int step=0;bool effectsMode=false,automationMode=false;juce::String automationLane;
+    MainComponent& owner;juce::File output,inputVideo;juce::String original,project,video,audio,image,saved,error;juce::Array<juce::var> checks;int step=0;bool effectsMode=false,automationMode=false,transitionMode=false;juce::StringArray transitionClips;juce::String dissolveId;juce::String automationLane;
 };
 #endif

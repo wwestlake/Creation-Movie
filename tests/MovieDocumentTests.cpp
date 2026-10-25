@@ -5,10 +5,11 @@ using namespace movie;
 static void check(bool condition,const char* message){if(!condition)throw std::runtime_error(message);}
 static void edit(Document& d,const char* command,juce::var args)
 {
-    juce::String error;check(d.edit(command,args,error),error.toRawUTF8());
+    juce::String error;const bool ok=d.edit(command,args,error);check(ok,error.toRawUTF8());
 }
 #include "EffectsTests.inc"
 #include "AutomationTests.inc"
+#include "TransitionTests.inc"
 int main()
 {
     try
@@ -85,6 +86,7 @@ int main()
         check(creation::timeline::evaluateAutomationSegment(a,b,0.5)==0.5f,"Shared curve evaluator unavailable");
         runEffectsTests();
         runAutomationTests();
+        runTransitionTests();
         std::cout<<"PASS: migration, stable ownership, commands, undo/redo, sources, automation, save/reopen, atomic failure, shared split/curves\n";
         return 0;
     }

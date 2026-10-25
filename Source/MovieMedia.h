@@ -30,7 +30,9 @@ public:
     juce::Image video(double seconds,int width,int height);
     void audio(double seconds,int samples,int rate,float* stereo);
 private:
-    MediaReader& reader(const Media&,bool audio);
+    MediaReader& reader(const Media&,bool audio,const juce::String& instance={});
+    void drawVideoClip(juce::Graphics&,const Clip&,double,int,int);
+    std::vector<std::vector<size_t>> audioTransitions,videoTransitions;
     void audioBlock(double,int,int,float*);
     Sequence sequence;
     std::atomic<bool>* cancel;

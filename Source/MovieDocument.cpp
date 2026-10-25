@@ -33,7 +33,8 @@ const Media* Sequence::findMedia(const juce::String& id) const { for(const auto&
 int Sequence::findClip(const juce::String& id) const { for(size_t i=0;i<clips.size();++i) if(clips[i].id==id) return (int)i; return -1; }
 juce::var Sequence::toJson() const
 {
-    juce::Array<juce::var> a,c,t;
+    juce::Array<juce::var> a,c,t,transitionsJson;
+    for(const auto& tr:transitions)transitionsJson.add(tr.toJson(false));
     for(const auto& track:tracks) t.add(track.toJson());
     for(const auto& m:media) a.add(object({{"id",m.id},{"versionId",m.versionId},{"name",m.name},{"path",m.path},{"info",m.info.toJson()}}));
     for(const auto& x:clips)
@@ -46,14 +47,14 @@ juce::var Sequence::toJson() const
             {"durationFrames",(juce::int64)std::llround(x.durationSeconds/frameSeconds())},
             {"sourceIn",x.sourceStartSeconds},{"sourceDuration",x.sourceDurationSeconds},{"params",params}}));
     }
-    return object({{"schema","djehuti-movie-sequence"},{"version",4},{"name",name},{"width",width},{"height",height},
-        {"fpsNum",fpsNum},{"fpsDen",fpsDen},{"tracks",t},{"media",a},{"clips",c}});
+    return object({{"schema","djehuti-movie-sequence"},{"version",5},{"name",name},{"width",width},{"height",height},
+        {"fpsNum",fpsNum},{"fpsDen",fpsDen},{"tracks",t},{"media",a},{"clips",c},{"transitions",transitionsJson}});
 }
 bool Sequence::fromJson(const juce::var& v, Sequence& result, juce::String& error)
 {
     auto fail=[&](const juce::String& s){ error=s; return false; };
     const int version=v["version"];
-    if(v["schema"].toString()!="djehuti-movie-sequence" || (version!=2 && version!=3 && version!=4)) return fail("Unsupported Movie sequence schema.");
+    if(v["schema"].toString()!="djehuti-movie-sequence" || (version!=2 && version!=3 && version!=4 && version!=5)) return fail("Unsupported Movie sequence schema.");
     Sequence s; s.name=v["name"].toString(); s.width=v["width"];s.height=v["height"];s.fpsNum=v["fpsNum"];s.fpsDen=v["fpsDen"];
     if(s.width<16 || s.width>8192 || s.height<16 || s.height>8192 || s.fpsNum<1 || s.fpsDen<1
         || (double)s.fpsNum/s.fpsDen>240 || (double)s.fpsNum/s.fpsDen<1) return fail("Invalid sequence dimensions or frame rate.");
@@ -77,7 +78,7 @@ bool Sequence::fromJson(const juce::var& v, Sequence& result, juce::String& erro
         if(!tracks || tracks->size()>4096) return fail("Invalid track list.");
         for(const auto& e:*tracks)
         {
-            if(version==4 && !e["effects"].isArray())return fail("Missing effects chain.");
+            if(version>=4 && !e["effects"].isArray())return fail("Missing effects chain.");
             Track t; if(!Track::fromJson(e,t,error)) return false;
             if(!ids.insert(t.id).second) return fail("Duplicate track identity.");
             s.tracks.push_back(std::move(t));
@@ -138,6 +139,13 @@ bool Sequence::fromJson(const juce::var& v, Sequence& result, juce::String& erro
                 || (t.type=="image" && !m->info.still)) return fail("Assigned media is incompatible or missing.");
         }
     }
+    if(version<5 && v.hasProperty("transitions") && (!v["transitions"].isArray() || v["transitions"].size()>0))return fail("Transition data requires schema 5; refusing to discard it.");
+    if(version==5)
+    {
+        const auto* transitions=v["transitions"].getArray();if(!transitions || transitions->size()>4096)return fail("Invalid/missing transition list.");
+        for(const auto& item:*transitions){Transition tr;if(!Transition::fromJson(item,tr,error))return false;s.transitions.push_back(tr);}
+        if(!validateTransitions(s,error))return false;
+    }
     result=std::move(s); return true;
 }
 struct Document::Edit : juce::UndoableAction
@@ -155,7 +163,9 @@ bool Document::edit(const juce::String& command,const juce::var& a,juce::String&
     auto s=sequence;
     const auto index=s.findClip(a["clipId"].toString());
     auto fail=[&](const juce::String& why){error=why;return false;};
-    if(command.startsWith("automation."))
+    if(command.startsWith("transition."))
+    {if(!editTransition(s,command.fromFirstOccurrenceOf("transition.",false,false),a,error))return false;}
+    else if(command.startsWith("automation."))
     {if(!editAutomation(s,command.fromFirstOccurrenceOf("automation.",false,false),a,error))return false;}
     else if(command.startsWith("effect."))
     {
@@ -312,6 +322,10 @@ bool Document::edit(const juce::String& command,const juce::var& a,juce::String&
         }
         else return fail("Unknown edit command.");
     }
+    // An explicit clip/track removal invalidates its associated transitions in
+    // the same undo transaction. Other incompatible edits reject atomically.
+    if(command=="remove" || command=="track.remove")
+        s.transitions.erase(std::remove_if(s.transitions.begin(),s.transitions.end(),[&](const Transition& tr){return s.findClip(tr.outgoing)<0 || s.findClip(tr.incoming)<0;}),s.transitions.end());
     Sequence checked;
     if(!Sequence::fromJson(s.toJson(),checked,error))return false;
     checked.projectId=sequence.projectId;
