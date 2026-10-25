@@ -1,5 +1,13 @@
 # Djehuti Movie capabilities
 
+## Milestone 5 development status
+
+Native video/audio transitions, timeline editing, exact properties, persistence,
+agent commands and shipped training cards are implemented on the development
+branch. Build, console tests and all 18 focused application check groups pass.
+See [Transitions](TRANSITIONS.md) and HANDOFF.md for evidence and limits.
+This milestone is not yet integrated.
+
 ## Implemented foundation
 
 Milestone 4 adds persistent effect automation lanes, timeline keyframes and exact
@@ -52,8 +60,8 @@ It does not restart the shared VFS, terminate someone else's Movie instance, or 
 ## Current limits and further work
 
 - The media path is currently SDR/8-bit. HDR and display-rotation metadata need deliberate handling rather than a blanket professional-format claim.
-- Professional proxy/cache management, waveforms, advanced mixing, transitions, grading and richer titles remain further editing work.
+- Professional proxy/cache management, waveforms, advanced mixing, grading and richer titles remain further editing work.
 - Startup project enumeration and project-menu enumeration still use synchronous service calls; this change moves the explicit create/open/save operations off the UI thread.
 - This job lifecycle does not add crash recovery or forcibly interrupt blocking storage calls.
 - Development DLL copying is not installer completion. Release codec deployment, attribution and corresponding-source obligations need a packaging pass.
-- Movie-specific shipped knowledge cards and complete user Help still need authoring. Registered command descriptions and schemas describe the current automation behavior.
+- Milestone 5 includes shipped transition knowledge cards; complete user Help still needs authoring. Registered command descriptions and schemas describe the current automation behavior.

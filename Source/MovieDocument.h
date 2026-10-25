@@ -4,6 +4,7 @@
 #include <functional>
 #include <map>
 #include "MovieEffects.h"
+#include "MovieTransitions.h"
 
 namespace movie
 {
@@ -45,6 +46,7 @@ struct Sequence
     std::vector<Media> media;
     std::vector<Clip> clips;
     std::vector<Track> tracks;
+    std::vector<Transition> transitions;
     // Stable ownership; TimelineClip::trackIndex is only a shared-helper/render adapter.
     std::map<juce::String, juce::String> clipTracks;
     int findTrack(const juce::String&) const;

@@ -495,11 +495,19 @@ private:
 #include "AutomationEditor.inc"
 #include "EffectsPanel.inc"
 #include "TrackInspector.inc"
+#include "TransitionPanel.inc"
+#include "MovieTransitionCards.h"
 #include "TrackUiCheck.inc"
 
 // =============================================================================
 // MainComponent Implementation
 // =============================================================================
+void MainComponent::showTransition(const juce::String& id,const juce::String& clip)
+{
+    selectedTransition=id;if(clip.isNotEmpty())selectedClip=clip;else if(id.isNotEmpty())selectedClip={};
+    for(const auto& tr:document.sequence.transitions)if(tr.id==id)selectedTrack=tr.trackId;
+    transitionPanel->sync();dock->activatePanel("transitions");timeline->repaint();
+}
 void MainComponent::selectAutomationPoint(const juce::String& lane,const juce::String& point)
 {
     selectTrack(lane,false);dock->activatePanel("effects");effectsPanel->selectPoint(point);
@@ -583,6 +591,8 @@ MainComponent::MainComponent()
     inspector = std::make_unique<Inspector>(*this);
     trackInspector = std::make_unique<TrackInspector>(*this);
     effectsPanel = std::make_unique<EffectsPanel>(*this);
+    transitionPanel=std::make_unique<TransitionPanel>(*this);
+    engineer.setShippedCards(movie::transitionCards());
     chat = std::make_unique<creation::agent::EngineerChat>(engineer);
     cards = std::make_unique<creation::agent::CardsPanel>(engineer);
 
@@ -593,6 +603,7 @@ MainComponent::MainComponent()
     dock->registerPanel("program", "Program Monitor", std::make_unique<NonOwningHost>(*monitor), Zone::CenterTab);
     dock->registerPanel("timeline", "Timeline", std::make_unique<NonOwningHost>(*timeline), Zone::Bottom);
     dock->registerPanel("track-inspector", "Track Inspector", std::make_unique<NonOwningHost>(*trackInspector), Zone::Right);
+    dock->registerPanel("transitions","Transitions",std::make_unique<NonOwningHost>(*transitionPanel),Zone::Right);
     dock->registerPanel("effects", "Effects", std::make_unique<NonOwningHost>(*effectsPanel), Zone::Right);
     dock->registerPanel("inspector", "Inspector", std::make_unique<NonOwningHost>(*inspector), Zone::Right);
     dock->registerPanel("engineer", "Virtual Engineer", std::make_unique<NonOwningHost>(*chat), Zone::Right);
@@ -670,7 +681,7 @@ MainComponent::MainComponent()
     const int testArgument=arguments.indexOf("--track-ui-check");
     if(testArgument>=0 && testArgument+1<arguments.size())
         trackUiCheck=std::make_unique<TrackUiCheck>(*this,juce::File(arguments[testArgument+1].unquoted()),
-            testArgument+2<arguments.size()?juce::File(arguments[testArgument+2].unquoted()):juce::File(),arguments.contains("--effects-ui-check") || arguments.contains("--automation-ui-check"),arguments.contains("--automation-ui-check"));
+            testArgument+2<arguments.size()?juce::File(arguments[testArgument+2].unquoted()):juce::File(),arguments.contains("--effects-ui-check") || arguments.contains("--automation-ui-check") || arguments.contains("--transitions-ui-check"),arguments.contains("--automation-ui-check") || arguments.contains("--transitions-ui-check"),arguments.contains("--transitions-ui-check"));
 #endif
 }
 
@@ -721,6 +732,7 @@ void MainComponent::resized()
 
 bool MainComponent::keyPressed(const juce::KeyPress& key)
 {
+    if(selectedTransition.isNotEmpty() && key.getKeyCode()==juce::KeyPress::deleteKey){runUi("movie.transition.remove",movie::object({{"transitionId",selectedTransition}}));return true;}
     if(key.getKeyCode()==juce::KeyPress::F2Key){renameTrack();return true;}
     if(key.getModifiers().isAltDown() && (key.getKeyCode()==juce::KeyPress::upKey || key.getKeyCode()==juce::KeyPress::downKey))
     {
@@ -864,6 +876,19 @@ MainComponent::Result MainComponent::execute(const juce::String& name, const juc
         return Result::success(state());
     if (name == "movie.jobs.get")
         return Result::success(jobs());
+    if(name=="movie.transition.catalog")return Result::success(movie::transitionCatalog());
+    if(name=="movie.transition.list"){juce::Array<juce::var> list;for(const auto& tr:document.sequence.transitions)list.add(tr.toJson());return Result::success(list);}
+    if(name=="movie.transition.get")
+    {for(const auto& tr:document.sequence.transitions)if(tr.id==a["transitionId"].toString())return Result::success(tr.toJson());return Result::failure("unknown_transition","Unknown transition identity.");}
+    if(name=="movie.transition.validate")
+    {auto draft=document.sequence;juce::String error;if(!movie::editTransition(draft,a["transitionId"].toString().isEmpty()?"create":"update",a,error))return Result::failure("invalid_transition",error);return Result::success(movie::object({{"valid",true}}));}
+    if(name.startsWith("movie.transition."))
+    {
+        juce::String error;if(!document.edit(name.fromFirstOccurrenceOf("movie.",false,false),a,error))return Result::failure("edit_rejected",error);
+        if(name.endsWith("create"))return Result::success(document.sequence.transitions.back().toJson());
+        for(const auto& tr:document.sequence.transitions)if(tr.id==a["transitionId"].toString())return Result::success(tr.toJson());
+        return Result::success(movie::object({{"removed",true}}));
+    }
     if(name=="movie.effects.catalog")return Result::success(movie::effectsCatalogJson());
     if (name == "movie.track.list")
         return Result::success(document.sequence.toJson()["tracks"]);
@@ -1255,6 +1280,13 @@ void MainComponent::registerCommands()
     reg("movie.jobs.get", "Get Background Jobs", "Returns the current or most recent background media job status.",
         Effect::read, schemaObj({}));
     reg("movie.track.list", "List Tracks", "Returns tracks in display order.", Effect::read, schemaObj({}));
+    reg("movie.transition.catalog","Transition Catalog","Available transition types, defaults, units and ranges.",Effect::read,schemaObj({}));
+    reg("movie.transition.list","List Transitions","All saved transition definitions.",Effect::read,schemaObj({}));
+    auto transitionSchema=schemaObj({{"transitionId",movie::object({{"type","string"}})},{"trackId",movie::object({{"type","string"}})},
+        {"outgoing",movie::object({{"type","string"}})},{"incoming",movie::object({{"type","string"}})},{"type",movie::object({{"type","string"}})},
+        {"start",movie::object({{"type","number"}})},{"duration",movie::object({{"type","number"}})},{"curve",movie::object({{"type","string"}})},
+        {"direction",movie::object({{"type","string"}})},{"softness",movie::object({{"type","number"}})},{"midpoint",movie::object({{"type","number"}})},{"tension",movie::object({{"type","number"}})}});
+    for(const auto* op:{"get","validate","create","update","remove"})reg("movie.transition."+juce::String(op),"Transition "+juce::String(op),"Same-track clip transition; exact seconds; validates actual source handles without changing clips.",juce::String(op)=="get" || juce::String(op)=="validate"?Effect::read:Effect::write,transitionSchema);
     reg("movie.effects.catalog", "Effects Catalog", "Returns audio/video effect and stable parameter metadata, ranges, units, defaults and automation eligibility.",Effect::read,schemaObj({}));
     auto effectSchema=schemaObj({{"trackId",movie::object({{"type","string"}})},{"effectId",movie::object({{"type","string"}})},
         {"type",movie::object({{"type","string"}})},{"parameterId",movie::object({{"type","string"}})},
@@ -1432,6 +1464,8 @@ void MainComponent::changed()
 {
     if(document.sequence.findTrack(selectedTrack)<0)
         selectedTrack=document.sequence.tracks.empty()?juce::String():document.sequence.tracks.front().id;
+    if(std::none_of(document.sequence.transitions.begin(),document.sequence.transitions.end(),[&](const movie::Transition& tr){return tr.id==selectedTransition;}))selectedTransition={};
+    if(transitionPanel)transitionPanel->sync();
     if(trackInspector)trackInspector->sync();
     if(effectsPanel)effectsPanel->sync();
     if(timeline)timeline->sync();
@@ -1471,7 +1505,7 @@ void MainComponent::refresh()
 
 void MainComponent::selectClip(const juce::String& id)
 {
-    selectedClip = id;
+    selectedTransition={};selectedClip = id;
     const int selectedIndex=document.sequence.findClip(id);
     if(selectedIndex>=0)selectedTrack=document.sequence.owner(document.sequence.clips[(size_t)selectedIndex]);
     if(trackInspector)trackInspector->sync();
@@ -1524,6 +1558,7 @@ juce::var MainComponent::state() const
         { "canRedo", document.undo.canRedo() },
         { "selectedClip", selectedClip },
         { "selectedTrack", selectedTrack },
+        { "selectedTransition",selectedTransition },
         { "selectedMedia", selectedMedia },
         { "codecVersion", movie::codecVersion() },
         { "transport", movie::object({
@@ -1800,6 +1835,7 @@ juce::PopupMenu MainComponent::getMenuForIndex(int, const juce::String& menuName
         m.addItem(36, "Cards");
         m.addItem(38, "Track Inspector");
         m.addItem(39, "Effects Browser / Inspector");
+        m.addItem(42,"Transitions");
         m.addSeparator();
         m.addItem(37, "Reset Workspace Layout");
     }
@@ -1836,6 +1872,7 @@ void MainComponent::menuItemSelected(int id, int)
         case 35: if (dock) dock->activatePanel("engineer"); break;
         case 36: if (dock) dock->activatePanel("cards"); break;
         case 38: if (dock) dock->activatePanel("track-inspector"); break;
+        case 42: showTransition(selectedTransition,selectedClip);break;
         case 39: if (dock) dock->activatePanel("effects"); break;
         case 37: if (dock) dock->resetLayout(); break;
         case 40: showHelp(); break;

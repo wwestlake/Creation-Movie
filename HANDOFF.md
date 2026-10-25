@@ -1,5 +1,42 @@
 # Djehuti Movie implementation handoff
 
+## October 25 - Milestone 5: native transitions, ready for review
+
+Milestone 4 is merged through Movie PR #37 (`f456fa9`) and Suite PR #207.
+Milestone 5 started from clean Movie master on `feat/movie-native-transitions`.
+No Station/shared changes. Work is ready for a Movie PR and is not integrated; the umbrella
+reference awaits Movie integration. See docs/TRANSITIONS.md for implementation.
+
+The latest single-worker Debug application and console-test build passed.
+Document, effects, automation and transition tests passed, including the new
+fractional-time save/reopen regression. Logs: build/transitions-build.log and
+build/transitions-unit-results.log. Existing compiler warnings remain.
+
+After the Executive Director lifted the temporary application-testing restriction,
+the final application run passed all 18 groups, including the existing 14 track,
+effects and automation groups. New checks cover transition creation, exact
+properties/reapply precision, invalid text, selection, boundary/move/delete,
+undo/redo, API queries/dry-runs, card loading, save/reopen, six real-video variants,
+both real PCM gain laws, seeking, playback/restart and FFV1/MP4 exports.
+The original project was restored and Movie exited normally. Native pointer
+input is untested; interface checks use synthesized events. No broad codec matrix.
+
+Evidence: build/transitions-check-f/track-ui-results.json and
+build/transitions-check-f/transitions-media-results.json. Export pixel error 0;
+PCM export peak error 0.00001525134 (16-bit quantization); audio gain-law error
+8.895e-9; WAV seeking error 0. Full-mix AAC seek residual 0.00012715347 is reproduced
+by compressed-source-only processing with identical preroll (0.00012715394).
+This existing decoder limitation remains; transition processing adds no observed
+residual. External HTTP command/schema/query/validation and both shipped card
+retrieval checks passed (build/transitions-check-e/transitions-api-results.json).
+
+Console regressions also cover translucent fade-through-black endpoints and
+sequence-boundary transitions, unknown properties, atomic malformed loads and
+rejection of transition data mislabeled as an older schema. The installed VFS
+service was started because it was not running; it remains available. Its settings
+and shared source were unchanged. Wait for Executive Director review/merge before
+deleting this branch or updating the umbrella gitlink through its own PR.
+
 ## October 25 - Milestone 4: effects automation
 
 Started from Movie master `b126ded` (merged Milestones 1-3, PR #36) on a fresh

@@ -1,12 +1,17 @@
 # Movie track document (Milestone 1)
 
-Schema `djehuti-movie-sequence`, version 4, keeps an ordered `tracks` array.
+Schema `djehuti-movie-sequence`, version 5, keeps an ordered `tracks` array.
 Milestone 3 adds persistent effects chains; version-3 documents remain readable
 with empty chains. See [Effects](EFFECTS.md) for the added model and commands.
 Array position is display/compositing order: later tracks paint over earlier
 tracks, preserving the old renderer. Clips persist `trackId`; the shared clip's
 `trackIndex` is a derived adapter for existing rendering and edit helpers.
 Track IDs survive reorder, rename, source changes, undo and save/reopen.
+
+Milestone 5 adds a sequence-level `transitions` array with stable IDs and clip
+references. Versions 2-4 load with no transitions; malformed transition data is
+rejected atomically. Transition end is derived from start and duration rather
+than persisted redundantly. See [Transitions](TRANSITIONS.md).
 
 ## Reuse
 
@@ -84,5 +89,5 @@ Disabled tracks contribute neither picture nor sound in preview/export; duration
 continues to include their placements. Sources do not replace the media library.
 
 Milestone 4 evaluates the existing effect-parameter automation targets/points.
-The optional `automationVisible` flag defaults to true. Schema remains 4;
+The optional `automationVisible` flag defaults to true. Milestone 4 retained schema 4;
 see [Automation](AUTOMATION.md) for editing, compatibility and runtime behavior.

@@ -251,6 +251,13 @@ void MediaReader::audioAt(double seconds,int samples,int rate,float* output)
 Renderer::Renderer(Sequence s,std::atomic<bool>* c):sequence(std::move(s)),cancel(c)
 {
     sequence.resolveTrackIndices();automation=resolveAutomation(sequence);trackClips.resize(sequence.tracks.size());spans.resize(sequence.tracks.size(),{1.0e30,0});audioEffects.resize(sequence.tracks.size());
+    audioTransitions.resize(sequence.clips.size());videoTransitions.resize(sequence.tracks.size());
+    for(size_t i=0;i<sequence.transitions.size();++i)
+    {
+        const auto& tr=sequence.transitions[i];
+        if(tr.audio()){audioTransitions[(size_t)sequence.findClip(tr.outgoing)].push_back(i);audioTransitions[(size_t)sequence.findClip(tr.incoming)].push_back(i);}
+        else videoTransitions[(size_t)sequence.findTrack(tr.trackId)].push_back(i);
+    }
     for(size_t i=0;i<sequence.clips.size();++i)
     {
         const auto& clip=sequence.clips[i];if(clip.trackIndex<0)continue;
@@ -258,15 +265,30 @@ Renderer::Renderer(Sequence s,std::atomic<bool>* c):sequence(std::move(s)),cance
         spans[ti].first=std::min(spans[ti].first,clip.startSeconds);spans[ti].second=std::max(spans[ti].second,clip.startSeconds+clip.durationSeconds);
     }
 }
-MediaReader& Renderer::reader(const Media& m,bool audio)
+MediaReader& Renderer::reader(const Media& m,bool audio,const juce::String& instance)
 {
-    const auto key=m.id+(audio?"/a":"/v");auto found=readers.find(key);
+    const auto key=m.id+(audio?"/a":"/v")+instance;auto found=readers.find(key);
     if(found!=readers.end())return *found->second;
     // A bounded cache; sequential clips reuse their reader across frames/blocks.
     if(readers.size()>=16)readers.erase(readers.begin());
     auto input=creation::assets::openVfsEntryStream(sequence.projectId,m.path);
     auto r=std::make_unique<MediaReader>(std::move(input),m.name,audio?MediaReader::Kind::audio:MediaReader::Kind::video,cancel);
     auto& ref=*r;readers[key]=std::move(r);return ref;
+}
+void Renderer::drawVideoClip(juce::Graphics& g,const Clip& c,double seconds,int width,int height)
+{
+            g.setOpacity((float)(double)c.videoParams.getWithDefault("opacity",1.0));
+            auto title=c.videoParams["title"].toString();
+            if(title.isNotEmpty())
+            {
+                const auto box=juce::Rectangle<int>(width/16,height*3/4,width*7/8,height/5);
+                g.setColour(juce::Colours::black.withAlpha(0.65f));g.fillRoundedRectangle(box.toFloat(),(float)height/80);
+                g.setColour(juce::Colours::white);g.setFont(juce::FontOptions((float)height/18,juce::Font::bold));
+                g.drawFittedText(title,box.reduced(width/40),juce::Justification::centred,3);return;
+            }
+            const auto* m=sequence.findMedia(c.assetId);if(!m || !m->info.hasVideo)return;
+            const auto image=reader(*m,false,c.id).videoAt(m->info.still?0:c.sourceStartSeconds+seconds-c.startSeconds,width,height);
+            if(image.isValid())g.drawImageWithin(image,0,0,width,height,juce::RectanglePlacement::centred,false);
 }
 juce::Image Renderer::video(double seconds,int width,int height)
 {
@@ -278,22 +300,19 @@ juce::Image Renderer::video(double seconds,int width,int height)
         juce::Image layer;if(processing)layer=juce::Image(juce::Image::ARGB,width,height,true);
         std::unique_ptr<juce::Graphics> layerGraphics;if(processing)layerGraphics=std::make_unique<juce::Graphics>(layer);
         auto& g=processing?*layerGraphics:composite;
+        const Transition* active=nullptr;
+        for(const auto i:videoTransitions[ti])if(sequence.transitions[i].active(seconds)){active=&sequence.transitions[i];break;}
         for(const auto index:trackClips[ti])
         {
-            const auto& c=sequence.clips[index];if(seconds+1e-8<c.startSeconds || seconds>=c.startSeconds+c.durationSeconds-1e-8)continue;
+            const auto& c=sequence.clips[index];if(active && (c.id==active->outgoing || c.id==active->incoming))continue;if(seconds+1e-8<c.startSeconds || seconds>=c.startSeconds+c.durationSeconds-1e-8)continue;
             if(cancel && cancel->load())throw std::runtime_error("Cancelled");
-            g.setOpacity((float)(double)c.videoParams.getWithDefault("opacity",1.0));
-            auto title=c.videoParams["title"].toString();
-            if(title.isNotEmpty())
-            {
-                const auto box=juce::Rectangle<int>(width/16,height*3/4,width*7/8,height/5);
-                g.setColour(juce::Colours::black.withAlpha(0.65f));g.fillRoundedRectangle(box.toFloat(),(float)height/80);
-                g.setColour(juce::Colours::white);g.setFont(juce::FontOptions((float)height/18,juce::Font::bold));
-                g.drawFittedText(title,box.reduced(width/40),juce::Justification::centred,3);continue;
-            }
-            const auto* m=sequence.findMedia(c.assetId);if(!m || !m->info.hasVideo)continue;
-            const auto image=reader(*m,false).videoAt(m->info.still?0:c.sourceStartSeconds+seconds-c.startSeconds,width,height);
-            if(image.isValid())g.drawImageWithin(image,0,0,width,height,juce::RectanglePlacement::centred,false);
+            drawVideoClip(g,c,seconds,width,height);
+        }
+        if(active)
+        {
+            juce::Image a(juce::Image::ARGB,width,height,true),b(juce::Image::ARGB,width,height,true);
+            {juce::Graphics ga(a),gb(b);drawVideoClip(ga,sequence.clips[(size_t)sequence.findClip(active->outgoing)],seconds,width,height);drawVideoClip(gb,sequence.clips[(size_t)sequence.findClip(active->incoming)],seconds,width,height);}
+            g.setOpacity(1);g.drawImageAt(blendTransition(*active,seconds,a,b),0,0);
         }
         if(processing){layerGraphics.reset();const auto evaluated=evaluatedEffects(track.effects,automation,seconds);processVideoEffects(layer,evaluated);composite.setOpacity(1);composite.drawImageAt(layer,0,0);}
     }
@@ -310,13 +329,24 @@ void Renderer::audioBlock(double seconds,int samples,int rate,float* output)
         for(const auto index:trackClips[ti])
         {
             const auto& c=sequence.clips[index];auto* m=sequence.findMedia(c.assetId);if(!m || !m->info.hasAudio || c.soundDetached)continue;
-            const auto from=std::max(seconds,c.startSeconds),to=std::min(seconds+(double)samples/rate,c.startSeconds+c.durationSeconds);
+            double clipStart=c.startSeconds,clipEnd=c.startSeconds+c.durationSeconds;
+            for(const auto tr:audioTransitions[index]){clipStart=std::min(clipStart,sequence.transitions[tr].start);clipEnd=std::max(clipEnd,sequence.transitions[tr].end());}
+            const auto from=std::max(seconds,clipStart),to=std::min(seconds+(double)samples/rate,clipEnd);
             if(to<=from)continue;
             const int offset=juce::jlimit(0,samples,(int)std::llround((from-seconds)*rate));
             const int n=juce::jlimit(0,samples-offset,(int)std::llround((to-from)*rate));if(n==0)continue;
-            reader(*m,true).audioAt(c.sourceStartSeconds+from-c.startSeconds,n,rate,scratch.data());
+            reader(*m,true,c.id).audioAt(c.sourceStartSeconds+from-c.startSeconds,n,rate,scratch.data());
             const float gain=(float)(double)c.videoParams.getWithDefault("gain",1.0);
-            for(int i=0;i<n*2;++i)trackBuffer[(size_t)offset*2+i]+=scratch[(size_t)i]*gain;
+            for(int i=0;i<n;++i)
+            {
+                const double t=seconds+(double)(offset+i)/rate;double weight=t>=c.startSeconds && t<c.startSeconds+c.durationSeconds?1:0;
+                for(const auto tr:audioTransitions[index])
+                {
+                    const auto& transition=sequence.transitions[tr];if(!transition.active(t))continue;
+                    const auto gains=transitionAudioGains(transition,t);weight=c.id==transition.outgoing?gains.first:gains.second;break;
+                }
+                for(int ch=0;ch<2;++ch)trackBuffer[((size_t)offset+i)*2+ch]+=scratch[(size_t)i*2+ch]*(float)(gain*weight);
+            }
         }
         audioEffects[ti].process(trackBuffer.data(),samples,rate,seconds-spans[ti].first,spans[ti].second-spans[ti].first,track.effects,&automation,seconds);
         for(int i=0;i<samples*2;++i)output[i]+=trackBuffer[(size_t)i];
