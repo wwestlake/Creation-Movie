@@ -1,6 +1,7 @@
 #pragma once
 #include <JuceHeader.h>
 #include "MoviePlayback.h"
+#include "MovieVisualCapture.h"
 #include <creation/assets/ProjectSession.h>
 #include <creation/agent/AgentApi.h>
 #include <creation/agent/EngineerChat.h>
@@ -52,6 +53,9 @@ private:
 
     movie::Document document;
     movie::Playback playback,sourcePlayback;
+    movie::VisualCapture visualCapture;
+    bool liveSourceSelected() const;
+    void syncVisualCapture();
     creation::assets::ProjectSession session;
     creation::suite::SuiteSettings settings;
     creation::agent::VirtualEngineer engineer{creation::assets::SuiteAppDomain::movie};

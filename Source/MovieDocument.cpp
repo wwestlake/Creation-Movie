@@ -235,7 +235,13 @@ bool Document::edit(const juce::String& command,const juce::var& a,juce::String&
             else if(action=="rename") t.name=a["name"].toString().trim();
             else if(action=="type") {t.type=a["type"].toString();t.legacyMixed=false;}
             else if(action=="enabled") {if(!a["enabled"].isBool()) return fail("enabled must be boolean.");t.enabled=a["enabled"];}
-            else if(action=="source") t.source=a["source"].clone();
+            else if(action=="source")
+            {
+                const auto previous=t.source["category"].toString();t.source=a["source"].clone();
+                const auto category=t.source["category"].toString();
+                if(category=="display" || category=="window")t.monitoring=true;
+                else if(previous=="display" || previous=="window")t.monitoring=false;
+            }
             else if(action=="preferences")
             {
                 for(const auto* key:{"armed","monitoring"}) if(a.hasProperty(key) && !a[key].isBool()) return fail("Preferences must be boolean.");

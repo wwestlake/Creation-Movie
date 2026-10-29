@@ -8,7 +8,7 @@ public:
     {
         addAndMakeVisible(view);view.setViewedComponent(&form,false);view.setScrollBarsShown(true,false);
         for(auto* c:std::initializer_list<juce::Component*>{&heading,&nameLabel,&name,&typeLabel,&type,&enabled,&armed,&monitor,
-            &heightLabel,&height,&sourceLabel,&category,&media,&identity,&settingsLabel,&widthLabel,&pixelsLabel,&fpsLabel,&rateLabel,&channelsLabel,&width,&pixels,&fps,&rate,&channels,&applySource,&clearSource,&note,&automation,&remove,&effects})form.addAndMakeVisible(c);
+            &heightLabel,&height,&sourceLabel,&category,&media,&identity,&settingsLabel,&widthLabel,&pixelsLabel,&fpsLabel,&rateLabel,&channelsLabel,&width,&pixels,&fps,&rate,&channels,&applySource,&clearSource,&note,&automation,&remove,&effects,&rescan})form.addAndMakeVisible(c);
         heading.setText("Track Inspector",juce::dontSendNotification);
         nameLabel.setText("Name",juce::dontSendNotification);typeLabel.setText("Type",juce::dontSendNotification);
         heightLabel.setText("Lane height",juce::dontSendNotification);sourceLabel.setText("Source",juce::dontSendNotification);
@@ -29,6 +29,7 @@ public:
         height.onChange=[this]{if(!syncing)mutate("preferences",movie::object({{"height",height.getSelectedId()}}));};
         category.onChange=[this]{if(!syncing){populateMedia();layout();}};
         applySource.onClick=[this]{saveSource();};clearSource.onClick=[this]{mutate("source",movie::object({{"source",juce::var()}}));};
+        rescan.onClick=[this]{owner.visualCapture.refresh();populateMedia();};
         remove.onClick=[this]{owner.removeTrack(owner.selectedTrack);};
         effects.onClick=[this]{if(owner.dock)owner.dock->activatePanel("effects");};
         note.setJustificationType(juce::Justification::topLeft);automation.setJustificationType(juce::Justification::topLeft);
@@ -50,7 +51,7 @@ public:
             auto add=[&](const char* key,const char* label){categories.push_back(key);category.addItem(label,(int)categories.size());};
             add("none","No source assigned");
             if(t.type=="video" || t.type=="audio" || t.type=="image")add("media","Imported project media");
-            if(t.type=="video"){add("display","Display ... saved configuration only");add("window","Window ... saved configuration only");add("camera","Camera ... saved configuration only");}
+            if(t.type=="video"){add("display","Screen / individual display");add("window","Application window");add("camera","Camera ... saved configuration only");}
             if(t.type=="audio"){add("microphone","Microphone ... saved configuration only");add("systemAudio","System audio ... saved configuration only");}
             const auto token=t.source["category"].toString();
             auto found=std::find(categories.begin(),categories.end(),token);
@@ -82,6 +83,13 @@ public:
     }
     void paint(juce::Graphics& g)override{g.fillAll(creation_movie::branding::panelColour());}
     void resized()override{view.setBounds(getLocalBounds());layout();}
+public:
+    void refreshCaptureChoices()
+    {
+        const auto cat=selectedCategory();if(cat!="display" && cat!="window")return;
+        juce::String stamp;for(const auto& source:owner.visualCapture.sources())if(source.kind==cat)stamp+=source.id+source.name;
+        if(stamp!=catalogStamp){catalogStamp=stamp;populateMedia();}
+    }
 private:
     juce::String selectedCategory()const
     {
@@ -104,24 +112,37 @@ private:
         sourceLabel.setVisible(sources);category.setVisible(sources);applySource.setVisible(sources);clearSource.setVisible(sources);
         if(sources){row(sourceLabel,18);row(category);}
         const auto cat=selectedCategory();const bool live=cat!="none" && cat!="media";
-        media.setVisible(sources && cat=="media");identity.setVisible(sources && live);
-        if(sources && cat=="media")row(media);
-        if(sources && live)row(identity);
-        const bool videoSettings=live && t.type=="video",audioSettings=live && t.type=="audio";
+        const bool visual=cat=="display" || cat=="window";
+        monitor.setButtonText(visual?"Live capture preview":"Monitor preference (inactive)");
+        rescan.setVisible(sources && visual);
+        media.setVisible(sources && (cat=="media" || visual));identity.setVisible(sources && live && !visual);
+        if(sources && (cat=="media" || visual))row(media);
+        if(sources && visual)row(rescan);
+        if(sources && live && !visual)row(identity);
+        const bool videoSettings=live && !visual && t.type=="video",audioSettings=live && t.type=="audio";
         widthLabel.setVisible(valid && videoSettings);pixelsLabel.setVisible(valid && videoSettings);fpsLabel.setVisible(valid && videoSettings);rateLabel.setVisible(valid && audioSettings);channelsLabel.setVisible(valid && audioSettings);
-        settingsLabel.setVisible(live);width.setVisible(videoSettings);pixels.setVisible(videoSettings);fps.setVisible(videoSettings);rate.setVisible(audioSettings);channels.setVisible(audioSettings);
-        if(live)row(settingsLabel,20);
+        settingsLabel.setVisible(live && !visual);width.setVisible(videoSettings);pixels.setVisible(videoSettings);fps.setVisible(videoSettings);rate.setVisible(audioSettings);channels.setVisible(audioSettings);
+        if(live && !visual)row(settingsLabel,20);
         if(videoSettings){row(widthLabel,18);row(width);row(pixelsLabel,18);row(pixels);row(fpsLabel,18);row(fps);}
         if(audioSettings){row(rateLabel,18);row(rate);row(channelsLabel,18);row(channels);}
         if(sources){row(applySource);row(clearSource);}
-        note.setText(live?"Configuration only. No live device discovery, capture or monitoring is active.":t.type=="effects"?"Effects-track routing is undefined. Use effects on a video, audio or image track.":"Source changes keep existing clips. Arm and Monitor are saved preferences only.",juce::dontSendNotification);
-        row(note,68);automation.setVisible(t.type=="automation");if(t.type=="automation")row(automation,100);
+        note.setText(visual?"Apply a source to preview it in Source Monitor. Live preview starts on assignment; uncheck Live capture preview to stop. Tracks sharing a source use one acquisition. Window selections must be renewed after restarting Movie. Recording is not active.":live?"Configuration only. No live device discovery, capture or monitoring is active.":t.type=="effects"?"Effects-track routing is undefined. Use effects on a video, audio or image track.":"Source changes keep existing clips. Arm remains a saved preference only.",juce::dontSendNotification);
+        row(note,visual?130:68);automation.setVisible(t.type=="automation");if(t.type=="automation")row(automation,100);
         row(remove);form.setSize(w+20,std::max(y,view.getHeight()));
     }
     void populateMedia()
     {
+        const int old=media.getSelectedId()-1;juce::String chosen=juce::isPositiveAndBelow(old,(int)mediaIds.size())?mediaIds[(size_t)old]:juce::String();
         media.clear(juce::dontSendNotification);mediaIds.clear();
         const int i=owner.document.sequence.findTrack(owner.selectedTrack);if(i<0)return;
+        const auto categoryToken=selectedCategory();
+        if(categoryToken=="display" || categoryToken=="window")
+        {
+            if(chosen.isEmpty())chosen=owner.document.sequence.tracks[(size_t)i].source["identity"].toString();
+            for(const auto& source:owner.visualCapture.sources())if(source.kind==categoryToken){mediaIds.push_back(source.id);media.addItem(source.name,(int)mediaIds.size());}
+            for(size_t n=0;n<mediaIds.size();++n)if(mediaIds[n]==chosen)media.setSelectedId((int)n+1,juce::dontSendNotification);
+            media.setTextWhenNothingSelected("Choose an available "+categoryToken+"...");return;
+        }
         const auto& typeToken=owner.document.sequence.tracks[(size_t)i].type;
         for(const auto& m:owner.document.sequence.media)
             if((typeToken=="video" && m.info.hasVideo) || (typeToken=="audio" && m.info.hasAudio) || (typeToken=="image" && m.info.still))
@@ -143,10 +164,10 @@ private:
         const auto cat=selectedCategory();
         if(cat=="none"){mutate("source",movie::object({{"source",juce::var()}}));return;}
         juce::String id=identity.getText().trim();
-        if(cat=="media")
+        if(cat=="media" || cat=="display" || cat=="window")
         {
             const int mi=media.getSelectedId()-1;
-            if(!juce::isPositiveAndBelow(mi,(int)mediaIds.size())){owner.warn("Choose compatible project media first.");return;}
+            if(!juce::isPositiveAndBelow(mi,(int)mediaIds.size())){owner.warn("Choose an available source first.");return;}
             id=mediaIds[(size_t)mi];
         }
         if(id.isEmpty()){owner.warn("Enter a label for the saved source configuration.");return;}
@@ -159,6 +180,7 @@ private:
         if(fps.isVisible() && fps.getText().isNotEmpty() && (ti<0 || fps.getText()!=owner.document.sequence.tracks[(size_t)ti].source["settings"]["fpsNum"].toString()))
             settings.getDynamicObject()->setProperty("fpsDen",1);
         mutate("source",movie::object({{"source",movie::object({{"category",cat},{"identity",id},{"settings",settings}})}}));
+        if(cat=="display" || cat=="window"){owner.selectedMedia={};owner.sourcePlayback.play(false);owner.syncVisualCapture();owner.dock->activatePanel("source");}
     }
     MainComponent& owner;juce::Viewport view;juce::Component form;bool syncing=false,valid=false;juce::String trackId;
     std::vector<juce::String> types{"video","audio","image","effects","automation"},categories,mediaIds;
@@ -168,11 +190,15 @@ private:
     juce::ToggleButton enabled{"Enabled"},armed{"Arm preference (no recording)"},monitor{"Monitor preference (inactive)"};
     juce::TextButton applySource{"Apply Source"},clearSource{"Clear Source"},remove{"Remove Track..."};
     juce::TextButton effects{"Effects Browser / Inspector..."};
+    juce::TextButton rescan{"Refresh available sources"};
+    juce::String catalogStamp;
 };
 void MainComponent::selectTrack(const juce::String& id,bool showInspector)
 {
     if(document.sequence.findTrack(id)<0)return;
     selectedTransition={};selectedTrack=id;selectedClip={};
+    const auto cat=document.sequence.tracks[(size_t)document.sequence.findTrack(id)].source["category"].toString();
+    if(cat=="display" || cat=="window"){selectedMedia={};sourcePlayback.play(false);if(dock)dock->activatePanel("source");}
     if(trackInspector)trackInspector->sync();
     if(effectsPanel)effectsPanel->sync();
     if(inspector)inspector->syncFromSelection();

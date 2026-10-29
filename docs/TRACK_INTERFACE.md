@@ -19,7 +19,8 @@ undoable `movie.track.*` commands.
 - The green/grey header indicator toggles Enabled. Disabled tracks and clips are
   visibly dimmed and retain the existing preview/export enable semantics.
 - Arm/Mon preferences are shown on audio/video headers of at least 64 pixels.
-  Their inspector captions explicitly state that recording/monitoring is inactive.
+  Arm remains an inactive recording preference. Display/window sources have a
+  functional Live capture preview toggle; other source monitoring is inactive.
 - Remove Track is available above the timeline, in the inspector and in the
   header context menu. Configured/occupied tracks require confirmation. Imported
   media is kept. Existing target-reference validation can reject removal.
@@ -44,10 +45,14 @@ Imported project sources are selected by media name from the compatible project
 catalog. There is no second filesystem picker. Import external media through the
 existing Media Library first.
 
-Display/window/camera and microphone/system-audio entries are labeled **saved
-configuration only**. A source label and optional requested format can be saved;
-no device is enumerated, opened, monitored or recorded. Apply Source commits the
-descriptor; Clear Source removes it. Neither changes existing clip contents.
+Display/window choices now enumerate real sources and show live images through
+Source Monitor. Apply Source assigns the selected catalog ID and enables that
+track's preview subscription; Clear Source removes it. Multiple tracks selecting
+the same source share physical acquisition. Source Monitor can pause/stop preview.
+Window selections expire across app restarts and require explicit reselection.
+Camera and microphone/system-audio entries remain **saved configuration only**.
+Neither source assignment nor clearing changes existing clips; recording remains
+inactive. See [Capture Phase 2](CAPTURE_PHASE_2.md).
 
 Effects tracks explain that their routing is undefined; ordinary audio, video
 and image tracks have functional effects through the docked [Effects browser](EFFECTS.md).
@@ -85,5 +90,6 @@ regression checks for migration, persistence, playback and export.
 
 Milestone 4 adds automation keyframe lanes and editing through the Effects dock;
 see [Automation](AUTOMATION.md). Historical "stored only" limitations above
-are superseded for resolved effect-parameter targets; capture/source monitoring
-and effects-track routing remain deferred.
+are superseded for resolved effect-parameter targets. Capture Phase 2 adds live
+display/window preview; other source monitoring and effects-track routing remain
+deferred.
