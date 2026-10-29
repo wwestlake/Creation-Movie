@@ -185,6 +185,15 @@ pre-existing Station R3 checks (`PatchLiveVoice.cpp:193`, `CS_SIGNAL_LAB_RUNTIME
 `AudioGraphSelfTest.cpp:46`, `CS_SIGNAL_LAB_NODE_LIBRARY`). No Station changes or
 check bypass are included.
 
-Movie Phase 4 is ready for review on `feat/movie-synchronized-recording`. After its PR actually merges, update
+Movie implementation commit: `20ef59dd12ce60757bbdb712144d1c9cca1205e6`, branch
+`feat/movie-synchronized-recording`, published in
+[Movie PR #43](https://github.com/wwestlake/Creation-Movie/pull/43), targeting
+`master`. This report's final review metadata is a documentation-only follow-up.
+Movie's source tree is committed; the umbrella checkout still shows its Movie
+submodule ahead of the deliberately pinned, merged Phase 3 commit. This is pending
+integration, not an unstaged application-source change.
+
+Merge/deploy Suite #210 first, then merge Movie #43 after required review/checks.
+After Movie's PR actually merges, update
 the umbrella gitlink through a separate PR and remove completed branches. Required
 reviews and CI must not be bypassed. An open PR is not integrated work.

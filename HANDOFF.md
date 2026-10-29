@@ -27,7 +27,10 @@ The VFS dependency is committed as `c6e4dfd` in
 merged Movie Phase 3 and supersedes #209. Requirements CI still fails the existing
 Station R3 macro/path audit; no Station fix or check bypass is included.
 
-Movie Phase 4 is ready for its review PR. After its PR actually
+Movie implementation is committed as `20ef59dd12ce60757bbdb712144d1c9cca1205e6`
+and published in [Movie PR #43](https://github.com/wwestlake/Creation-Movie/pull/43),
+targeting `master`. A documentation-only follow-up records these review links.
+After its PR actually
 merges, update the umbrella gitlink through a further PR. Do not claim clean,
 integrated master or delete unmerged development branches.
 
