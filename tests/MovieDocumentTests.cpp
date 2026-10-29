@@ -1,3 +1,4 @@
+#include "MovieCaptureStream.h"
 #include "MovieDocument.h"
 #include <iostream>
 #include <stdexcept>
@@ -101,6 +102,18 @@ int main()
         const auto deviceJson=juce::JSON::toString(devices.sequence.toJson());Sequence deviceReopened;
         check(Sequence::fromJson(juce::JSON::parse(deviceJson),deviceReopened,error),error.toRawUTF8());check(deviceJson==juce::JSON::toString(deviceReopened.toJson()),"Device identities/native formats changed on reopen");
         edit(devices,"track.source",object({{"trackId",cameraTrack},{"source",juce::var()}}));devices.undo.undo();check(juce::JSON::toString(devices.sequence.tracks[(size_t)devices.sequence.findTrack(cameraTrack)].source)==juce::JSON::toString(cameraConfig),"Device source undo changed format identity");devices.undo.redo();check(devices.sequence.tracks[(size_t)devices.sequence.findTrack(cameraTrack)].source.isVoid(),"Device source redo failed");
+        Document take;take.sequence.tracks.clear();edit(take,"track.create",object({{"type","video"}}));const auto captureTrack=take.sequence.tracks.back().id;
+        edit(take,"track.source",object({{"trackId",captureTrack},{"source",object({{"category","display"},{"identity","display:test-recording"}})}}));
+        MediaInfo captured;captured.duration=1.000123456;captured.width=64;captured.height=48;captured.hasVideo=true;captured.fpsNum=30;captured.fpsDen=1;
+        auto output=object({{"trackId",captureTrack},{"sourceId","display:test-recording"},{"sourceKind","display"},{"id","captured-media"},{"path","Media/captured.mkv"},{"info",captured.toJson()},{"usable",true},{"startSeconds",1.234567891}});
+        auto publication=object({{"tracks",juce::Array<juce::var>{output}}});edit(take,"recording.publish",publication);
+        check(take.sequence.clips.size()==1 && std::abs(take.sequence.clips[0].startSeconds-1.234567891)<1e-12 && std::abs(take.sequence.clips[0].durationSeconds-captured.duration)<1e-12,"Recording placement was frame-rounded");
+        const auto precise=juce::JSON::toString(take.sequence.toJson());Sequence preciseReopened;check(Sequence::fromJson(juce::JSON::parse(precise),preciseReopened,error) && precise==juce::JSON::toString(preciseReopened.toJson()),"Subframe recording timing changed on reopen");
+        take.undo.undo();check(take.sequence.clips.empty() && take.sequence.media.size()==1,"Recording undo discarded media instead of only placements");take.undo.redo();check(take.sequence.clips.size()==1,"Recording redo failed");
+        edit(take,"recording.publish",publication);check(take.sequence.clips.size()==1 && take.sequence.media.size()==1,"Recording recovery duplicated assets/placements");
+        auto legacyTake=take.sequence.toJson();legacyTake.getDynamicObject()->setProperty("version",5);check(!Sequence::fromJson(legacyTake,preciseReopened,error),"Precise timing silently accepted as an older schema");for(auto& clip:*legacyTake["clips"].getArray()){clip.getDynamicObject()->removeProperty("startSeconds");clip.getDynamicObject()->removeProperty("durationSeconds");clip.getDynamicObject()->setProperty("durationFrames",(juce::int64)std::floor(captured.duration/take.sequence.frameSeconds()));}const bool legacyOk=Sequence::fromJson(legacyTake,preciseReopened,error);check(legacyOk,("Schema-5 project compatibility failed: "+error).toRawUTF8());
+        edit(take,"track.source",object({{"trackId",captureTrack},{"source",object({{"category","display"},{"identity","display:changed"}})}}));output.getDynamicObject()->setProperty("id","unplaced-media");output.getDynamicObject()->setProperty("path","Media/unplaced.mkv");edit(take,"recording.publish",object({{"tracks",juce::Array<juce::var>{output}}}));check(take.sequence.media.size()==2 && take.sequence.clips.size()==1,"Stale capture target was rebound or its media discarded");
+        CaptureQueue bounded(128);bounded.after=0;auto sample=std::make_shared<CaptureSample>();sample->audio=std::make_shared<const std::vector<float>>(32,0.5f);sample->frames=32;sample->rate=8000;sample->channels=1;sample->hostTime=1;bounded.push(sample);bounded.push(sample);check(bounded.overflow && bounded.peakBytes<=128,"Capture queue is not bounded");check(bounded.pop()!=nullptr && bounded.bytes==0,"Capture queue accounting failed");
         runEffectsTests();
         runAutomationTests();
         runTransitionTests();

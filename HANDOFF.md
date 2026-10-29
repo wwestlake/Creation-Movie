@@ -1,5 +1,36 @@
 # Djehuti Movie implementation handoff
 
+## October 29 — Capture Phase 4: ready for review
+
+Phase 3 PR #41 is merged at `71e5f33`; its completed local/remote branch was
+removed after verifying integration. Phase 4 is on the fresh
+`feat/movie-synchronized-recording` branch. No Phase 5 work is included.
+
+Track-owned recording, common QPC session timing, bounded per-track encoders,
+open-ended VFS writes, RF64/NUT media, exact schema-6 placement, retained-media
+undo/redo and failure reporting are implemented. See
+[the Phase 4 engineering report](docs/CAPTURE_PHASE_4.md).
+
+The full five-track mounted suite passes all 12 groups, including two physical
+microphones, shared camera acquisition, save/reopen, seek/replay, source-loss
+partial output, startup cancellation and synthetic 30-minute 300 ppm drift
+(88 microseconds residual). One-second bounded WASAPI buffering eliminated the
+measured dual-input overruns in the final run. Native device regression passes
+37 checks; native display/window regression and document/effects/automation/
+transition console checks pass. All 18 broader editing/export, 10 device UI and 9
+visual UI groups pass. An authenticated recorded-project workflow additionally
+verified idempotent recovery, independent move/trim/split with exact undo, real
+playback and H.264/AAC MP4 export. All detailed evidence is in the Phase 4 report.
+
+The VFS dependency is committed as `c6e4dfd` in
+[Suite PR #210](https://github.com/wwestlake/Creation-Suite/pull/210). It pins only
+merged Movie Phase 3 and supersedes #209. Requirements CI still fails the existing
+Station R3 macro/path audit; no Station fix or check bypass is included.
+
+Movie Phase 4 is ready for its review PR. After its PR actually
+merges, update the umbrella gitlink through a further PR. Do not claim clean,
+integrated master or delete unmerged development branches.
+
 ## October 28 - Multisource Capture Phase 3: ready for review
 
 Started from merged Phase 2 master `91598ba` on

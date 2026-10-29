@@ -32,6 +32,7 @@ struct VisualCapture::Impl
     mutable std::mutex mutex;
     std::vector<VisualSource> catalog;
     std::vector<VisualBinding> bindings;
+    std::vector<RecordingSubscription> recordings;
     std::map<juce::String,VisualPreview> snapshots;
     juce::String problem;
     std::atomic<bool> stopping{false}, rescan{true};
@@ -62,7 +63,7 @@ struct VisualCapture::Impl
         winrt::Windows::Graphics::Capture::GraphicsCaptureSession session{nullptr};
         Item item{nullptr};
         std::shared_ptr<std::atomic<bool>> closed=std::make_shared<std::atomic<bool>>(false);
-        VisualPreview latest;
+        juce::int64 lastPublished=0;VisualPreview latest;juce::String epoch=juce::Uuid().toString();
         winrt::Windows::Graphics::SizeInt32 size{};
         ~Acquisition(){try{if(session)session.Close();if(pool)pool.Close();}catch(...) {}}
         explicit Acquisition(Target value):target(std::move(value))
@@ -177,7 +178,7 @@ struct VisualCapture::Impl
                 const bool requested=rescan.exchange(false);
                 if(requested)failed.clear();
                 if(requested || now>=scanAt){discover();scanAt=now+std::chrono::seconds(2);}
-                std::vector<VisualBinding> wanted;{std::lock_guard lock(mutex);wanted=bindings;}
+                std::vector<VisualBinding> wanted;std::vector<RecordingSubscription> sinks;{std::lock_guard lock(mutex);wanted=bindings;sinks=recordings;}for(const auto& r:sinks)wanted.push_back({"record:"+r.trackId,r.sourceId,true,r.settings,false});
                 std::map<juce::String,int> counts;for(const auto& b:wanted)if(b.active && !b.sourceId.startsWith("camera:") && !b.sourceId.startsWith("microphone:"))++counts[b.sourceId];
                 for(auto it=sessions.begin();it!=sessions.end();)if(!counts.count(it->first) || !targets.count(it->first)
                     || it->second->target.monitor!=targets[it->first].monitor)it=sessions.erase(it);else ++it;
@@ -193,7 +194,9 @@ struct VisualCapture::Impl
                     else try
                     {
                         auto& session=sessions[count.first];if(!session)session=std::make_unique<Acquisition>(target->second);
-                        session->poll();current=session->latest;
+                        const auto previousFrame=session->latest.frameNumber;session->poll();current=session->latest;
+                        if(!sinks.empty() && current.image.isValid() && current.state=="live" && (current.frameNumber!=previousFrame || captureHostTime()-session->lastPublished>1000000))
+                        {auto sample=std::make_shared<CaptureSample>();sample->image=current.image;sample->sourceTime=current.timestamp100ns;sample->repeated=current.frameNumber==previousFrame;sample->hostTime=sample->repeated?captureHostTime():current.timestamp100ns;sample->hostTime=(std::max)(sample->hostTime,session->lastPublished+1);sample->uncertainty100ns=std::max<juce::int64>(0,sample->hostTime-current.timestamp100ns);session->lastPublished=sample->hostTime;sample->sequence=current.frameNumber;sample->clock="host-qpc-100ns";sample->epoch=session->epoch;publishCapture(sinks,count.first,sample);}
                     }
                     catch(const winrt::hresult_error& e){current.state="failed";current.message=juce::String(e.message().c_str());sessions.erase(count.first);failed[count.first]=current;}
                     catch(const std::exception& e){current.state="failed";current.message=e.what();if(target->second.window){windowIds.erase(target->second.window);rescan=true;}sessions.erase(count.first);failed[count.first]=current;}
@@ -216,10 +219,19 @@ VisualCapture::VisualCapture():impl(std::make_unique<Impl>()){}
 VisualCapture::~VisualCapture()=default;
 std::vector<VisualSource> VisualCapture::sources() const {std::lock_guard lock(impl->mutex);auto result=impl->catalog;const auto devices=impl->devices.sources();result.insert(result.end(),devices.begin(),devices.end());return result;}
 void VisualCapture::refresh(){impl->rescan=true;impl->devices.refresh();}
-void VisualCapture::setBindings(std::vector<VisualBinding> bindings){std::lock_guard lock(impl->mutex);std::vector<VisualBinding> devices;for(const auto& b:bindings)if(b.sourceId.startsWith("camera:") || b.sourceId.startsWith("microphone:"))devices.push_back(b);impl->devices.setBindings(std::move(devices));impl->bindings=std::move(bindings);}
+void VisualCapture::setBindings(std::vector<VisualBinding> bindings){std::lock_guard lock(impl->mutex);std::vector<VisualBinding> devices;for(const auto& b:bindings)if(b.sourceId.startsWith("camera:") || b.sourceId.startsWith("microphone:"))devices.push_back(b);for(const auto& r:impl->recordings)if(r.sourceId.startsWith("camera:") || r.sourceId.startsWith("microphone:"))devices.push_back({"record:"+r.trackId,r.sourceId,true,r.settings,false});impl->devices.setBindings(std::move(devices));impl->bindings=std::move(bindings);}
+void VisualCapture::setRecordingSubscriptions(std::vector<RecordingSubscription> recordings)
+{
+    std::lock_guard lock(impl->mutex);impl->recordings=std::move(recordings);std::vector<VisualBinding> bindings;
+    for(const auto& b:impl->bindings)if(b.sourceId.startsWith("camera:") || b.sourceId.startsWith("microphone:"))bindings.push_back(b);
+    std::vector<RecordingSubscription> devices;
+    for(const auto& r:impl->recordings)if(r.sourceId.startsWith("camera:") || r.sourceId.startsWith("microphone:")){bindings.push_back({"record:"+r.trackId,r.sourceId,true,r.settings,false});devices.push_back(r);}
+    impl->devices.setRecordingSubscriptions(std::move(devices));impl->devices.setBindings(std::move(bindings));
+}
 VisualPreview VisualCapture::preview(const juce::String& track) const
 {
     std::lock_guard lock(impl->mutex);VisualPreview result;
+    for(const auto& r:impl->recordings)if(track=="record:"+r.trackId){if(r.sourceId.startsWith("camera:") || r.sourceId.startsWith("microphone:"))return impl->devices.preview(track);if(impl->problem.isNotEmpty()){result.state="failed";result.message=impl->problem;return result;}auto it=impl->snapshots.find(r.sourceId);if(it!=impl->snapshots.end())return it->second;result.state="starting";return result;}
     for(const auto& b:impl->bindings)if(b.trackId==track && (b.sourceId.startsWith("camera:") || b.sourceId.startsWith("microphone:")))return impl->devices.preview(track);
     if(impl->problem.isNotEmpty()){result.state="failed";result.message=impl->problem;return result;}
     for(const auto& b:impl->bindings)if(b.trackId==track)

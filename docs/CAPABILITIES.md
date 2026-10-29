@@ -1,12 +1,20 @@
 # Djehuti Movie capabilities
 
+## Capture Phase 4 (ready for review)
+
+Track-owned synchronized recording and incremental VFS persistence are implemented
+on the Phase 4 branch. Focused and broader validation pass; integration awaits
+review and the VFS dependency. See
+[Capture Phase 4](CAPTURE_PHASE_4.md) for architecture, evidence and limitations.
+Phone capture remains outside this phase.
+
 ## Capture Phase 3
 
 Camera and microphone adapters extend the existing capture manager, with native
 format catalog selection, camera Source Monitor preview, microphone input meters,
 independent listening and shared physical acquisition. Source assignments persist
 on tracks. See [Capture Phase 3](CAPTURE_PHASE_3.md) for measured validation and
-hardware limitations; recording and phone capture remain later phases.
+hardware limitations; recording is described in Phase 4 above.
 
 ## Capture Phase 2
 
@@ -14,16 +22,16 @@ Existing video tracks can select an individual display or application window and
 show actual live capture in Source Monitor. Tracks selecting the same source
 share one physical Windows Graphics Capture acquisition. Assignment, preview
 state, clear and undo/redo use the existing document/persistence paths. Recording
-and phone capture remain later phases. Camera/microphone adapters are described above. See
+is described in Phase 4 above; phone capture remains a later phase. Camera/microphone adapters are described above. See
 [Capture Phase 2](CAPTURE_PHASE_2.md) for validation and platform/identity limits.
 
-## Milestone 5 development status
+## Milestone 5 (merged)
 
 Native video/audio transitions, timeline editing, exact properties, persistence,
-agent commands and shipped training cards are implemented on the development
-branch. Build, console tests and all 18 focused application check groups pass.
+agent commands and shipped training cards are implemented and merged in PR #38 (`8c8ac14`). Build, console tests and all 18 focused
+application check groups passed for that milestone.
 See [Transitions](TRANSITIONS.md) and HANDOFF.md for evidence and limits.
-This milestone is not yet integrated.
+Capture Phase 4 adds recording to this merged foundation.
 
 ## Implemented foundation
 
@@ -46,8 +54,8 @@ and the explicit effects-track routing/performance limitations.
 - Dynamic track headers, Add/Remove Track, inline naming, drag/menu reordering,
   synchronized vertical scrolling and a docked Track Inspector. See
   [Track interface](TRACK_INTERFACE.md) for configuration and validation limits.
-- Persistent user-managed track document, stable clip ownership, configuration-only
-  source/arm/monitor preferences, and automation curve/target storage. See
+- Persistent user-managed track document, stable clip ownership, source/arm/monitor
+  preferences, and automation curve/target storage. See
   [Track document](TRACK_DOCUMENT.md) for commands and version-2 migration policy.
 
 These are implementation capabilities, not a claim that every format, workflow or UI path has passed acceptance testing.

@@ -42,6 +42,7 @@ struct DeviceCapture::Impl
     mutable std::mutex mutex;
     std::vector<VisualSource> catalog;
     std::vector<VisualBinding> bindings;
+    std::vector<RecordingSubscription> recordings;
     std::map<juce::String,VisualPreview> snapshots;
     juce::String problem;
     int acquisitions=0;bool discovered=false;
@@ -176,7 +177,7 @@ struct DeviceCapture::Impl
     }
     struct Pending
     {
-        std::mutex mutex;Com<IMFSample> sample;HRESULT result=S_OK;DWORD flags=0;LONGLONG timestamp=0;bool ready=false;
+        std::mutex mutex;Com<IMFSample> sample;HRESULT result=S_OK;DWORD flags=0;LONGLONG timestamp=0;bool ready=false;juce::int64 receivedAt=0;
     };
     class ReaderCallback final:public IMFSourceReaderCallback
     {
@@ -188,7 +189,7 @@ struct DeviceCapture::Impl
         ULONG STDMETHODCALLTYPE AddRef()override{return ++refs;}
         ULONG STDMETHODCALLTYPE Release()override{auto n=--refs;if(!n)delete this;return n;}
         HRESULT STDMETHODCALLTYPE OnReadSample(HRESULT hr,DWORD,DWORD flags,LONGLONG time,IMFSample* sample)override
-        {std::lock_guard lock(pending->mutex);pending->result=hr;pending->flags=flags;pending->timestamp=time;pending->sample=sample;pending->ready=true;return S_OK;}
+        {std::lock_guard lock(pending->mutex);pending->receivedAt=captureHostTime();pending->result=hr;pending->flags=flags;pending->timestamp=time;pending->sample=sample;pending->ready=true;return S_OK;}
         HRESULT STDMETHODCALLTYPE OnEvent(DWORD,IMFMediaEvent*)override{return S_OK;}
         HRESULT STDMETHODCALLTYPE OnFlush(DWORD)override{return S_OK;}
     };
@@ -198,6 +199,7 @@ struct DeviceCapture::Impl
         Com<IMFMediaSource> camera;Com<IMFSourceReader> reader;std::shared_ptr<Pending> pending;
         Com<IAudioClient> audio;Com<IAudioCaptureClient> capture;
         MonitorPipe* pipe=nullptr;int channels=0,sampleRate=0;double resampleAt=0,monitorRate=0;
+        juce::String epoch=juce::Uuid().toString();juce::int64 cameraOffset=INT64_MAX;
         LONG stride=0;int width=0,height=0;
         std::chrono::steady_clock::time_point lastActivity=std::chrono::steady_clock::now();
         ~Session(){if(pipe){pipe->enabled=false;++pipe->generation;}if(audio)audio->Stop();if(reader)reader->Flush(MF_SOURCE_READER_ALL_STREAMS);reader.Reset();if(camera)camera->Shutdown();}
@@ -230,18 +232,20 @@ struct DeviceCapture::Impl
             {
                 channels=(int)format["channels"];sampleRate=(int)format["sampleRate"];
                 check(target.microphone->Activate(__uuidof(IAudioClient),CLSCTX_ALL,nullptr,(void**)audio.GetAddressOf()),"Activate microphone");
-                auto f=audioFormat(sampleRate,channels);check(audio->Initialize(AUDCLNT_SHAREMODE_SHARED,0,1000000,0,&f.Format,nullptr),"Configure microphone");
+                // One second of bounded native buffering tolerates camera/driver
+                // polling stalls; available packets are still drained immediately.
+                auto f=audioFormat(sampleRate,channels);check(audio->Initialize(AUDCLNT_SHAREMODE_SHARED,0,10000000,0,&f.Format,nullptr),"Configure microphone");
                 check(audio->GetService(IID_PPV_ARGS(&capture)),"Microphone capture service");check(audio->Start(),"Start microphone");
             }
             }catch(...){if(pipe){pipe->enabled=false;++pipe->generation;}if(audio)audio->Stop();if(reader)reader->Flush(MF_SOURCE_READER_ALL_STREAMS);reader.Reset();if(camera)camera->Shutdown();throw;}
         }
-        void poll(double outputRate,bool monitoring)
+        void poll(double outputRate,bool monitoring,const std::vector<RecordingSubscription>& sinks,const juce::String& sourceId)
         {
             if(kind=="camera")
             {
-                Com<IMFSample> sample;LONGLONG timestamp=0;DWORD flags=0;
+                Com<IMFSample> sample;LONGLONG timestamp=0;DWORD flags=0;juce::int64 receivedAt=0;
                 {std::lock_guard lock(pending->mutex);if(!pending->ready){if(std::chrono::steady_clock::now()-lastActivity>std::chrono::seconds(8))throw std::runtime_error("Camera delivered no frames for 8 seconds. Refresh to retry.");return;}
-                 check(pending->result,"Acquire camera frame");sample=std::move(pending->sample);timestamp=pending->timestamp;flags=pending->flags;pending->ready=false;}
+                 check(pending->result,"Acquire camera frame");sample=std::move(pending->sample);timestamp=pending->timestamp;receivedAt=pending->receivedAt;flags=pending->flags;pending->ready=false;}
                 if(flags&(MF_SOURCE_READERF_ERROR|MF_SOURCE_READERF_ENDOFSTREAM|MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED))throw std::runtime_error("Camera stopped or changed its active format. Refresh to retry.");
                 if(sample)
                 {
@@ -250,6 +254,16 @@ struct DeviceCapture::Impl
                     juce::Image image(juce::Image::ARGB,width,height,true,juce::SoftwareImageType{});
                     {juce::Image::BitmapData bitmap(image,juce::Image::BitmapData::writeOnly);for(int y=0;y<height;++y){auto* dest=bitmap.getLinePointer(y);std::memcpy(dest,data+(ptrdiff_t)y*pitch,(size_t)width*4);for(int x=0;x<width;++x)dest[x*4+3]=255;}}
                     if(twoD)planar->Unlock2D();else buffer->Unlock();latest.image=std::move(image);latest.timestamp100ns=timestamp;++latest.frameNumber;latest.state="live";lastActivity=std::chrono::steady_clock::now();
+                    if(!sinks.empty())
+                    {
+                        auto frame=std::make_shared<CaptureSample>();frame->image=latest.image;frame->sourceTime=timestamp;frame->epoch=epoch;frame->sequence=latest.frameNumber;
+                        UINT64 deviceTime=0;
+                        if(SUCCEEDED(sample->GetUINT64(MFSampleExtension_DeviceTimestamp,&deviceTime)) && (juce::int64)deviceTime<=receivedAt+10000000 && receivedAt-(juce::int64)deviceTime<50000000)
+                        {frame->hostTime=(juce::int64)deviceTime;frame->clock="device-qpc-100ns";frame->uncertainty100ns=10000;}
+                        else
+                        {cameraOffset=std::min(cameraOffset,receivedAt-timestamp);frame->hostTime=timestamp+cameraOffset;frame->clock="arrival-envelope-correlation";frame->uncertainty100ns=(juce::int64)(10000000.0*(int)format["fpsDen"]/(int)format["fpsNum"])+std::max<juce::int64>(0,receivedAt-frame->hostTime);}
+                        publishCapture(sinks,sourceId,frame);
+                    }
                 }
                 check(reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM,0,nullptr,nullptr,nullptr,nullptr),"Request camera frame");
             }
@@ -274,6 +288,10 @@ struct DeviceCapture::Impl
                         }
                         resampleAt-=frames;
                     }
+                    if(!sinks.empty())
+                    {auto sample=std::make_shared<CaptureSample>();auto payload=std::make_shared<std::vector<float>>((size_t)frames*channels,0.0f);if(!silent)std::copy(input,input+payload->size(),payload->begin());
+                     sample->audio=payload;sample->sourceTime=sample->hostTime=(juce::int64)qpc;sample->position=(juce::int64)position;sample->sequence=latest.sampleCount;sample->rate=sampleRate;sample->channels=channels;sample->frames=(int)frames;sample->epoch=epoch;sample->clock="wasapi-qpc-100ns";
+                     sample->discontinuity=(flags&AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY)!=0;sample->invalidTimestamp=(flags&AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR)!=0;publishCapture(sinks,sourceId,sample);}
                     capture->ReleaseBuffer(frames);latest.sampleCount+=frames;latest.samplePosition=(juce::int64)position;latest.timestamp100ns=(juce::int64)qpc;latest.state="live";
                     if(flags&AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY)++latest.discontinuities;
                     if(flags&AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR)latest.message="Device reported an uncertain audio timestamp.";
@@ -297,7 +315,7 @@ struct DeviceCapture::Impl
                 const bool requested=rescan.exchange(false);const auto now=std::chrono::steady_clock::now();
                 if(requested || now>=scanAt){if(requested)failed.clear();discover(requested);scanAt=now+std::chrono::seconds(2);}
                 // Device presence is checked without reopening an active camera for discovery.
-                std::vector<VisualBinding> wanted;{std::lock_guard lock(mutex);wanted=bindings;}
+                std::vector<VisualBinding> wanted;std::vector<RecordingSubscription> sinks;{std::lock_guard lock(mutex);wanted=bindings;sinks=recordings;}
                 std::map<juce::String,std::vector<VisualBinding>> groups;for(const auto& b:wanted)if(b.active)groups[b.sourceId].push_back(b);
                 for(auto it=sessions.begin();it!=sessions.end();)if(!groups.count(it->first)){failed.erase(it->first);it=sessions.erase(it);}else ++it;
                 for(auto it=failed.begin();it!=failed.end();)if(!groups.count(it->first))it=failed.erase(it);else ++it;
@@ -329,7 +347,7 @@ struct DeviceCapture::Impl
                                 {for(auto& p:pipes){bool used=false;for(const auto& s:sessions)if(s.second && s.second->pipe==&p)used=true;if(!used){pipe=&p;break;}}if(!pipe)throw std::runtime_error("Live monitoring capacity (16 microphones) exceeded.");}
                                 session=std::make_unique<Session>(target->second,formatIndex,pipe);
                             }
-                            session->poll(outputRate.load(),monitor);value=session->latest;
+                            session->poll(outputRate.load(),monitor,sinks,group.first);value=session->latest;
                         }
                         catch(const std::exception& e){sessions.erase(group.first);failed[group.first]={e.what(),juce::JSON::toString(requestedFormat)};value.state="failed";value.message=e.what();}
                     }
@@ -352,6 +370,7 @@ DeviceCapture::DeviceCapture():impl(std::make_unique<Impl>()){} DeviceCapture::~
 std::vector<VisualSource> DeviceCapture::sources()const{std::lock_guard lock(impl->mutex);return impl->catalog;}
 void DeviceCapture::refresh(){impl->rescan=true;}
 void DeviceCapture::setBindings(std::vector<VisualBinding> b){std::lock_guard lock(impl->mutex);impl->bindings=std::move(b);}
+void DeviceCapture::setRecordingSubscriptions(std::vector<RecordingSubscription> r){std::lock_guard lock(impl->mutex);impl->recordings=std::move(r);}
 VisualPreview DeviceCapture::preview(const juce::String& track)const
 {
     std::lock_guard lock(impl->mutex);VisualPreview p;

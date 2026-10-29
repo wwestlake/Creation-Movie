@@ -43,18 +43,18 @@ juce::var Sequence::toJson() const
         params.getDynamicObject()->getProperties()=x.videoParams;
         c.add(object({{"id",x.id},{"assetId",x.assetId},{"name",x.displayName},{"trackId",owner(x)},
             {"kind",x.kind==creation::timeline::ClipKind::audio ? "audio":"video"},
-            {"startFrame",(juce::int64)std::llround(x.startSeconds/frameSeconds())},
+            {"startSeconds",x.startSeconds},{"durationSeconds",x.durationSeconds},{"startFrame",(juce::int64)std::llround(x.startSeconds/frameSeconds())},
             {"durationFrames",(juce::int64)std::llround(x.durationSeconds/frameSeconds())},
             {"sourceIn",x.sourceStartSeconds},{"sourceDuration",x.sourceDurationSeconds},{"params",params}}));
     }
-    return object({{"schema","djehuti-movie-sequence"},{"version",5},{"name",name},{"width",width},{"height",height},
+    return object({{"schema","djehuti-movie-sequence"},{"version",6},{"name",name},{"width",width},{"height",height},
         {"fpsNum",fpsNum},{"fpsDen",fpsDen},{"tracks",t},{"media",a},{"clips",c},{"transitions",transitionsJson}});
 }
 bool Sequence::fromJson(const juce::var& v, Sequence& result, juce::String& error)
 {
     auto fail=[&](const juce::String& s){ error=s; return false; };
     const int version=v["version"];
-    if(v["schema"].toString()!="djehuti-movie-sequence" || (version!=2 && version!=3 && version!=4 && version!=5)) return fail("Unsupported Movie sequence schema.");
+    if(v["schema"].toString()!="djehuti-movie-sequence" || (version!=2 && version!=3 && version!=4 && version!=5 && version!=6)) return fail("Unsupported Movie sequence schema.");
     Sequence s; s.name=v["name"].toString(); s.width=v["width"];s.height=v["height"];s.fpsNum=v["fpsNum"];s.fpsDen=v["fpsDen"];
     if(s.width<16 || s.width>8192 || s.height<16 || s.height>8192 || s.fpsNum<1 || s.fpsDen<1
         || (double)s.fpsNum/s.fpsDen>240 || (double)s.fpsNum/s.fpsDen<1) return fail("Invalid sequence dimensions or frame rate.");
@@ -105,12 +105,14 @@ bool Sequence::fromJson(const juce::var& v, Sequence& result, juce::String& erro
         x.kind=e["kind"].toString()=="audio"?creation::timeline::ClipKind::audio:creation::timeline::ClipKind::video;
         if(!finiteNumber(e["startFrame"]) || !finiteNumber(e["durationFrames"]) || !finiteNumber(e["sourceIn"])) return fail("Invalid clip timing.");
         x.startSeconds=(double)e["startFrame"]*s.frameSeconds();x.durationSeconds=(double)e["durationFrames"]*s.frameSeconds();
+        if(version>=6){if(!finiteNumber(e["startSeconds"]) || !finiteNumber(e["durationSeconds"]))return fail("Invalid precise clip timing.");x.startSeconds=e["startSeconds"];x.durationSeconds=e["durationSeconds"];}
+        else if(e.hasProperty("startSeconds") || e.hasProperty("durationSeconds"))return fail("Precise clip timing requires Movie schema 6.");
         x.sourceStartSeconds=e["sourceIn"];x.sourceDurationSeconds=e["sourceDuration"];
         if(auto* p=e["params"].getDynamicObject()) x.videoParams=p->getProperties();
         const auto* m=s.findMedia(x.assetId);
         const bool title=x.videoParams["title"].toString().isNotEmpty();
         if(x.id.isEmpty() || !ids.insert(x.id).second || x.trackIndex<0 || x.startSeconds<0
-            || x.startSeconds>86400 || x.durationSeconds<s.frameSeconds() || x.durationSeconds>86400 || x.sourceStartSeconds<0
+            || x.startSeconds>86400 || x.durationSeconds<(version>=6?1e-9:s.frameSeconds()) || x.durationSeconds>86400 || x.sourceStartSeconds<0
             || (!title && (!m || (!m->info.still && x.sourceStartSeconds+x.durationSeconds>m->info.duration+0.00001))))
             return fail("Clip is outside its source or sequence limits.");
         const auto gain=x.videoParams.getWithDefault("gain",1.0);
@@ -140,7 +142,7 @@ bool Sequence::fromJson(const juce::var& v, Sequence& result, juce::String& erro
         }
     }
     if(version<5 && v.hasProperty("transitions") && (!v["transitions"].isArray() || v["transitions"].size()>0))return fail("Transition data requires schema 5; refusing to discard it.");
-    if(version==5)
+    if(version>=5)
     {
         const auto* transitions=v["transitions"].getArray();if(!transitions || transitions->size()>4096)return fail("Invalid/missing transition list.");
         for(const auto& item:*transitions){Transition tr;if(!Transition::fromJson(item,tr,error))return false;s.transitions.push_back(tr);}
@@ -160,10 +162,25 @@ void Document::replace(Sequence replacement,bool clean){sequence=std::move(repla
 void Document::restore(const juce::var& v){Sequence s;juce::String e;if(Sequence::fromJson(v,s,e)){s.projectId=sequence.projectId;undo.beginNewTransaction("Restore agent edit");undo.perform(new Edit(*this,sequence,std::move(s)));}}
 bool Document::edit(const juce::String& command,const juce::var& a,juce::String& error)
 {
-    auto s=sequence;
+    auto s=sequence;auto undoBefore=sequence;bool retainRecordedMedia=false;
     const auto index=s.findClip(a["clipId"].toString());
     auto fail=[&](const juce::String& why){error=why;return false;};
-    if(command.startsWith("transition."))
+    if(command=="recording.publish")
+    {
+        const auto* entries=a["tracks"].getArray();if(!entries)return fail("Missing recorded media entries.");retainRecordedMedia=true;
+        for(const auto& entry:*entries)if((bool)entry["usable"])
+        {
+            const auto id=entry["id"].toString(),trackId=entry["trackId"].toString();const auto clipId="capture-"+id;
+            if(!s.findMedia(id)){Media media{id,id,"Recorded "+entry["sourceKind"].toString(),entry["path"].toString(),MediaInfo::fromJson(entry["info"])};s.media.push_back(media);undoBefore.media.push_back(media);}
+            const int ti=s.findTrack(trackId);if(ti<0 || s.findClip(clipId)>=0)continue;
+            const auto& track=s.tracks[(size_t)ti];const auto* media=s.findMedia(id);
+            if(track.source["identity"].toString()!=entry["sourceId"].toString() || juce::JSON::toString(track.source["settings"])!=juce::JSON::toString(entry["settings"]) || track.source["category"].toString()!=entry["sourceKind"].toString())continue;
+            if((track.type=="audio")!=media->info.hasAudio || media->info.duration<=0)continue;
+            Clip clip;clip.id=clipId;clip.assetId=id;clip.assetVersionId=id;clip.displayName=media->name;clip.trackIndex=ti;clip.kind=track.type=="audio"?creation::timeline::ClipKind::audio:creation::timeline::ClipKind::video;
+            clip.startSeconds=entry["startSeconds"];clip.durationSeconds=clip.sourceDurationSeconds=media->info.duration;clip.sourceStartSeconds=0;s.clips.push_back(clip);s.clipTracks[clipId]=trackId;
+        }
+    }
+    else if(command.startsWith("transition."))
     {if(!editTransition(s,command.fromFirstOccurrenceOf("transition.",false,false),a,error))return false;}
     else if(command.startsWith("automation."))
     {if(!editAutomation(s,command.fromFirstOccurrenceOf("automation.",false,false),a,error))return false;}
@@ -338,6 +355,6 @@ bool Document::edit(const juce::String& command,const juce::var& a,juce::String&
     const auto gesture=command=="effect.parameter"?a["gestureId"].toString()+a["effectId"].toString()+a["parameterId"].toString():juce::String();
     if(a["gestureId"].toString().isEmpty() || gesture!=lastEffectGesture)undo.beginNewTransaction(command);
     lastEffectGesture=gesture;
-    return undo.perform(new Edit(*this,sequence,std::move(checked)));
+    return undo.perform(new Edit(*this,retainRecordedMedia?std::move(undoBefore):sequence,std::move(checked)));
 }
 }

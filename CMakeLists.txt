@@ -122,6 +122,7 @@ target_sources(CreationMovieApp PRIVATE
     Source/TrackUiCheck.inc
     Source/EffectsPanel.inc
     Source/MovieDocument.cpp
+    Source/MovieRecording.cpp Source/MovieRecordingWriter.cpp
     Source/MovieTracks.cpp
     Source/MovieVisualCapture.cpp Source/MovieDeviceCapture.cpp Source/MovieVisualCapture.h
     Source/MovieTransitions.cpp Source/MovieTransitions.h Source/TransitionPanel.inc Source/MovieTransitionCards.h
@@ -207,3 +208,11 @@ if(WIN32)
 endif()
 enable_testing()
 add_test(NAME movie_document_tracks COMMAND MovieDocumentTests)
+
+# Optional local integration validation, using the canonical Movie build tree.
+# Normal Movie builds consume the service client without building its server.
+option(CREATION_MOVIE_BUILD_VFS_SERVICE "Build the VFS service and streaming checks alongside Movie" OFF)
+if(CREATION_MOVIE_BUILD_VFS_SERVICE)
+    set(CREATION_VFS_COPY_SHARED_BIN OFF)
+    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../services/VfsService" "${CMAKE_CURRENT_BINARY_DIR}/VfsService")
+endif()

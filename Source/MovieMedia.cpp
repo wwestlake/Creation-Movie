@@ -82,7 +82,7 @@ struct MediaReader::Impl
         format->interrupt_callback={interrupted,cancel};
         AVDictionary* options=nullptr;
         // Reject network/playlist demuxers; a managed asset is a self-contained stream.
-        av_dict_set(&options,"format_whitelist","mov,matroska,webm,avi,mpegts,mpeg,mp3,wav,flac,ogg,aiff,aac,png_pipe,jpeg_pipe,bmp_pipe,tiff_pipe,webp_pipe",0);
+        av_dict_set(&options,"format_whitelist","mov,matroska,webm,nut,avi,mpegts,mpeg,mp3,wav,flac,ogg,aiff,aac,png_pipe,jpeg_pipe,bmp_pipe,tiff_pipe,webp_pipe",0);
         av_dict_set(&options,"protocol_whitelist","",0);
         const int opened=avformat_open_input(&format,name.toRawUTF8(),nullptr,&options);av_dict_free(&options);check(opened,"Open media");
         check(avformat_find_stream_info(format,nullptr),"Read media metadata");
@@ -124,6 +124,25 @@ struct MediaReader::Impl
             auto* as=format->streams[ai];auto* p=as->codecpar;metadata.hasAudio=true;metadata.sampleRate=p->sample_rate;
             metadata.channels=p->ch_layout.nb_channels;metadata.audioCodec=avcodec_get_name(p->codec_id);
             if(metadata.duration<=0 && as->duration!=AV_NOPTS_VALUE)metadata.duration=std::max(metadata.duration,as->duration*av_q2d(as->time_base));
+        }
+        // Small indexless NUT takes may contain only one syncpoint. Recover their
+        // duration from packet timestamps without retaining packet payloads.
+        if(metadata.duration<=0 && juce::String(format->iformat->name)=="nut")
+        {
+            auto* durationPacket=av_packet_alloc();require(durationPacket!=nullptr,"Duration packet allocation failed.");
+            while(av_read_frame(format,durationPacket)>=0)
+            {
+                const auto* timedStream=format->streams[durationPacket->stream_index];
+                if(durationPacket->pts!=AV_NOPTS_VALUE)
+                {
+                    const double period=durationPacket->duration>0?durationPacket->duration*av_q2d(timedStream->time_base)
+                        :(timedStream->codecpar->codec_type==AVMEDIA_TYPE_VIDEO?(double)metadata.fpsDen/metadata.fpsNum:0);
+                    metadata.duration=std::max(metadata.duration,durationPacket->pts*av_q2d(timedStream->time_base)-origin+period);
+                }
+                av_packet_unref(durationPacket);
+            }
+            av_packet_free(&durationPacket);
+            check(av_seek_frame(format,-1,0,AVSEEK_FLAG_BACKWARD),"Rewind short indexless recording");
         }
         require((vi>=0 || ai>=0) && metadata.duration>0 && std::isfinite(metadata.duration),"Media has no usable timed audio/video stream.");
         require(metadata.width<=16384 && metadata.height<=16384,"Source dimensions exceed this build's decoder limit.");
