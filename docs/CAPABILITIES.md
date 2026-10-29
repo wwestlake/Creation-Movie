@@ -1,12 +1,20 @@
 # Djehuti Movie capabilities
 
+## Capture Phase 3
+
+Camera and microphone adapters extend the existing capture manager, with native
+format catalog selection, camera Source Monitor preview, microphone input meters,
+independent listening and shared physical acquisition. Source assignments persist
+on tracks. See [Capture Phase 3](CAPTURE_PHASE_3.md) for measured validation and
+hardware limitations; recording and phone capture remain later phases.
+
 ## Capture Phase 2
 
 Existing video tracks can select an individual display or application window and
 show actual live capture in Source Monitor. Tracks selecting the same source
 share one physical Windows Graphics Capture acquisition. Assignment, preview
-state, clear and undo/redo use the existing document/persistence paths. Recording,
-camera/microphone and phone capture remain later phases. See
+state, clear and undo/redo use the existing document/persistence paths. Recording
+and phone capture remain later phases. Camera/microphone adapters are described above. See
 [Capture Phase 2](CAPTURE_PHASE_2.md) for validation and platform/identity limits.
 
 ## Milestone 5 development status

@@ -55,12 +55,17 @@ video: media/display/window/camera; audio: media/microphone/systemAudio;
 image: media. `media` identities must refer to compatible imported media.
 Other identities are persistent source selection intent, never live HWNDs,
 COM pointers or device handles. Settings allow width, height, fpsNum, fpsDen,
-sampleRate, channels and channel. Capture Phase 2 resolves display/window IDs
+sampleRate, channels, channel and camera subtype GUID `format`. Capture Phase 2 resolves display/window IDs
 through its live catalog and shares acquisition across enabled, monitoring tracks.
 New visual assignments enable preview; clearing them disables it in the same
 undo transaction. Window IDs expire across Movie restarts, preserving unavailable
-saved intent without serializing/reusing HWNDs. Other live-source categories
-remain configuration only. Source changes do not change existing clips.
+saved intent without serializing/reusing HWNDs. Phase 3 extends this manager to
+camera symbolic links and WASAPI endpoint identities. Camera native format
+settings include exact rational frame rate and subtype; microphone settings
+include supported sample rate/channel count. New microphone assignments leave
+listening off; enabled tracks still acquire meter data. Matching sources share
+one compatible acquisition, with explicit format conflicts. Unavailable device
+bindings survive reopen. Only system audio remains configuration-only. Source changes do not change existing clips.
 Arm/monitor preferences only apply to audio/video; recording remains inactive.
 
 Automation contains `trackId`, `clipId`, `effectId`, `parameterId`, and `points`.
@@ -90,8 +95,8 @@ reject conversion explicitly rather than dropping content.
 Milestone 2 supplies dynamic headers, management controls, vertical scrolling
 and the Track Inspector; see [Track interface](TRACK_INTERFACE.md). Effect
 processing and automation are supplied by subsequent Movie milestones. Capture
-Phase 2 supplies display/window discovery and preview; camera/microphone capture
-and recording remain later capture phases.
+Phase 2 supplies display/window discovery and preview; Phase 3 adds camera and
+microphone acquisition/monitoring. Recording remains Phase 4. See CAPTURE_PHASE_3.md.
 Disabled tracks contribute neither picture nor sound in preview/export; duration
 continues to include their placements. Sources do not replace the media library.
 

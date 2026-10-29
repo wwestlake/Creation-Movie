@@ -1,8 +1,10 @@
 #include "MoviePlayback.h"
+#include "MovieVisualCapture.h"
 namespace movie
 {
 Playback::Playback(){audioWorker=std::thread([this]{produceAudio();});videoWorker=std::thread([this]{produceVideo();});}
 Playback::~Playback(){stop=true;wake.notify_all();device.removeAudioCallback(this);device.closeAudioDevice();audioWorker.join();videoWorker.join();}
+void Playback::setCaptureMonitor(VisualCapture* capture){const juce::ScopedLock lock(device.getAudioCallbackLock());captureMonitor.store(capture);}
 juce::String Playback::initialiseAudio()
 {
     const auto e=device.initialise(0,2,nullptr,true);if(e.isEmpty())device.addAudioCallback(this);return e;
@@ -34,6 +36,7 @@ void Playback::audioDeviceStopped(){deviceReady=false;isPlaying=false;}
 void Playback::audioDeviceIOCallbackWithContext(const float*const*,int,float*const* outputs,int channels,int count,const juce::AudioIODeviceCallbackContext&)
 {
     for(int c=0;c<channels;++c)if(outputs[c])std::fill(outputs[c],outputs[c]+count,0.0f);
+    if(auto* capture=captureMonitor.load())capture->renderAudio(outputs,channels,count,rate.load());
     if(!isPlaying.load())return;
     const auto current=generation.load();int written=0;
     while(written<count)
@@ -44,7 +47,7 @@ void Playback::audioDeviceIOCallbackWithContext(const float*const*,int,float*con
         if(block.generation!=current){readOffset=0;fifo.finishedRead(1);continue;}
         const int amount=std::min(count-written,block.count-readOffset);
         for(int c=0;c<std::min(2,channels);++c)if(outputs[c])
-            for(int i=0;i<amount;++i)outputs[c][written+i]=block.samples[(size_t)(readOffset+i)*2+c];
+            for(int i=0;i<amount;++i)outputs[c][written+i]+=block.samples[(size_t)(readOffset+i)*2+c];
         written+=amount;readOffset+=amount;
         // A concurrent seek owns the new clock; never overwrite it with old data.
         if(generation.load()==current)positionSeconds=std::min(duration.load(),(block.start+readOffset)/rate.load());

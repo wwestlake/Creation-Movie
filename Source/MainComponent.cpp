@@ -264,7 +264,7 @@ public:
             g.drawImageWithin(frame, bounds.getX(), bounds.getY(), bounds.getWidth(), bounds.getHeight(),
                               juce::RectanglePlacement::centred, false);
         }
-        else
+        else if(!live || capture.sampleCount==0)
         {
             g.setColour(juce::Colours::white.withAlpha(0.35f));
             g.setFont(juce::FontOptions(14.0f));
@@ -273,6 +273,14 @@ public:
                        bounds, juce::Justification::centred);
         }
 
+        if(live && capture.sampleCount>0)
+        {
+            const float level=juce::jlimit(0.0f,1.0f,capture.peak);
+            const float meter=level>0?juce::jlimit(0.0f,1.0f,(20*std::log10(level)+60)/60):0;
+            g.setColour(juce::Colours::darkgrey);g.fillRect(bounds.getX()+20,bounds.getCentreY(),bounds.getWidth()-40,24);
+            g.setColour(level>0.95f?juce::Colours::orange:juce::Colours::limegreen);g.fillRect(bounds.getX()+20,bounds.getCentreY(),(int)((bounds.getWidth()-40)*meter),24);
+            g.setColour(juce::Colours::white);g.drawText("Microphone input / "+juce::String(level>0?20*std::log10(level):-100,1)+" dBFS",bounds.withHeight(70),juce::Justification::centredBottom);
+        }
         // Overlay badge
         g.setColour(juce::Colours::black.withAlpha(0.6f));
         g.fillRoundedRectangle((float) bounds.getX() + 8.0f, (float) bounds.getY() + 8.0f, 220.0f, 24.0f, 4.0f);
@@ -529,6 +537,7 @@ MainComponent::MainComponent()
     creation::suite::SuiteSettingsStore settingsStore;
     settings = settingsStore.load(settingsErr);
 
+    playback.setCaptureMonitor(&visualCapture);
     const auto audioErr = playback.initialiseAudio();
     sourcePlayback.initialiseAudio();
     if (audioErr.isNotEmpty())
@@ -690,6 +699,9 @@ MainComponent::MainComponent()
     if(testArgument>=0 && testArgument+1<arguments.size())
         trackUiCheck=std::make_unique<TrackUiCheck>(*this,juce::File(arguments[testArgument+1].unquoted()),
             testArgument+2<arguments.size()?juce::File(arguments[testArgument+2].unquoted()):juce::File(),arguments.contains("--effects-ui-check") || arguments.contains("--automation-ui-check") || arguments.contains("--transitions-ui-check"),arguments.contains("--automation-ui-check") || arguments.contains("--transitions-ui-check"),arguments.contains("--transitions-ui-check"));
+    const int deviceArgument=arguments.indexOf("--device-ui-check");
+    if(deviceArgument>=0 && deviceArgument+2<arguments.size())
+        trackUiCheck=std::make_unique<TrackUiCheck>(*this,juce::File(arguments[deviceArgument+1].unquoted()),juce::File(arguments[deviceArgument+2].unquoted()),false,false,false,false,juce::File(),true);
     const int captureArgument=arguments.indexOf("--capture-ui-check");
     if(captureArgument>=0 && captureArgument+3<arguments.size())
         trackUiCheck=std::make_unique<TrackUiCheck>(*this,juce::File(arguments[captureArgument+1].unquoted()),juce::File(arguments[captureArgument+2].unquoted()),false,false,false,true,juce::File(arguments[captureArgument+3].unquoted()));
@@ -698,6 +710,7 @@ MainComponent::MainComponent()
 
 MainComponent::~MainComponent()
 {
+    playback.setCaptureMonitor(nullptr);
 #if JUCE_DEBUG
     trackUiCheck.reset();
 #endif
@@ -1109,11 +1122,10 @@ MainComponent::Result MainComponent::execute(const juce::String& name, const juc
         if(name=="movie.track.source")
         {
             const auto category=a["source"]["category"].toString(),id=a["source"]["identity"].toString();
-            if(category=="display" || category=="window")
+            if(category=="display" || category=="window" || category=="camera" || category=="microphone")
             {
-                const auto catalog=visualCapture.sources();
-                if(std::none_of(catalog.begin(),catalog.end(),[&](const movie::VisualSource& source){return source.id==id && source.kind==category;}))
-                    return Result::failure("unavailable_source","Choose an available source from movie.capture.sources. Saved unavailable assignments are retained on project load.");
+                const auto error=visualCapture.validate(id,category,a["source"]["settings"]);
+                if(error.isNotEmpty())return Result::failure("unavailable_source",error);
             }
         }
         juce::String error;
@@ -1303,8 +1315,8 @@ void MainComponent::registerCommands()
     reg("movie.jobs.get", "Get Background Jobs", "Returns the current or most recent background media job status.",
         Effect::read, schemaObj({}));
     reg("movie.track.list", "List Tracks", "Returns tracks in display order.", Effect::read, schemaObj({}));
-    reg("movie.capture.sources","Capture Sources","Current display/window catalog. Assign a returned ID through movie.track.source on an existing video track.",Effect::read,schemaObj({}));
-    reg("movie.capture.status","Capture Preview Status","Shared acquisition state, subscribers, frame counters and QPC timestamps. No recording.",Effect::read,schemaObj({}));
+    reg("movie.capture.sources","Capture Sources","Current display/window/camera/microphone catalog with supported device formats. Assign a returned ID through movie.track.source on an existing compatible video/audio track.",Effect::read,schemaObj({}));
+    reg("movie.capture.status","Capture Preview Status","Shared acquisition state, subscribers, active formats, frame/sample activity, source-clock timestamps and errors. No recording.",Effect::read,schemaObj({}));
     reg("movie.transition.catalog","Transition Catalog","Available transition types, defaults, units and ranges.",Effect::read,schemaObj({}));
     reg("movie.transition.list","List Transitions","All saved transition definitions.",Effect::read,schemaObj({}));
     auto transitionSchema=schemaObj({{"transitionId",movie::object({{"type","string"}})},{"trackId",movie::object({{"type","string"}})},
@@ -1820,13 +1832,13 @@ bool MainComponent::liveSourceSelected() const
 {
     if(selectedMedia.isNotEmpty())return false;
     const int i=document.sequence.findTrack(selectedTrack);if(i<0)return false;
-    const auto category=document.sequence.tracks[(size_t)i].source["category"].toString();return category=="display" || category=="window";
+    const auto category=document.sequence.tracks[(size_t)i].source["category"].toString();return category=="display" || category=="window" || category=="camera" || category=="microphone";
 }
 void MainComponent::syncVisualCapture()
 {
     std::vector<movie::VisualBinding> bindings;
     for(const auto& track:document.sequence.tracks)
-    {const auto category=track.source["category"].toString();if(track.type=="video" && (category=="display" || category=="window"))bindings.push_back({track.id,track.source["identity"].toString(),track.enabled && track.monitoring});}
+    {const auto category=track.source["category"].toString();if((track.type=="video" && (category=="display" || category=="window" || category=="camera")) || (track.type=="audio" && category=="microphone"))bindings.push_back({track.id,track.source["identity"].toString(),track.enabled && (category=="microphone" || track.monitoring),track.source["settings"].clone(),track.monitoring});}
     visualCapture.setBindings(std::move(bindings));
     if(trackInspector)trackInspector->refreshCaptureChoices();
     if(liveSourceSelected() && sourceMonitor)sourceMonitor->repaint();

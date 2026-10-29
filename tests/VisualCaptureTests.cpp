@@ -1,6 +1,8 @@
 #include "MovieVisualCapture.h"
 #include <iostream>
 #include <functional>
+#include <array>
+#include <cmath>
 #if JUCE_WINDOWS
 #include <windows.h>
 #endif
@@ -11,6 +13,7 @@ static bool waitFor(const std::function<bool()>& condition,int timeout=10000)
     const auto end=juce::Time::getMillisecondCounterHiRes()+timeout;
     while(juce::Time::getMillisecondCounterHiRes()<end){if(condition())return true;juce::Thread::sleep(50);}return condition();
 }
+#include "DeviceCaptureChecks.inc"
 #if JUCE_WINDOWS
 class ColourFixture final : public juce::Component, private juce::Timer
 {
@@ -34,6 +37,7 @@ static int fixture(const juce::String& title)
 int main(int argc,char** argv)
 {
     juce::ScopedJuceInitialiser_GUI gui;
+    if(argc>=3 && juce::String(argv[1])=="--devices")return deviceChecks(juce::File(argv[2]));
 #if JUCE_WINDOWS
     if(argc>=3 && juce::String(argv[1])=="--fixture")return fixture(argv[2]);
 #endif

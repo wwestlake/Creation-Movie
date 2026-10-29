@@ -90,6 +90,17 @@ int main()
         const creation::timeline::AutomationPoint a{"a",0,0,creation::timeline::AutomationCurveShape::linear,0};
         const creation::timeline::AutomationPoint b{"b",1,1,creation::timeline::AutomationCurveShape::linear,0};
         check(creation::timeline::evaluateAutomationSegment(a,b,0.5)==0.5f,"Shared curve evaluator unavailable");
+        Document devices;
+        edit(devices,"track.create",object({{"type","video"}}));const auto cameraTrack=devices.sequence.tracks.back().id;
+        const auto cameraConfig=object({{"category","camera"},{"identity","camera:unavailable-saved"},{"settings",object({{"width",1280},{"height",720},{"fpsNum",30000},{"fpsDen",1001},{"format","{3231564E-0000-0010-8000-00AA00389B71}"}})}});
+        edit(devices,"track.source",object({{"trackId",cameraTrack},{"source",cameraConfig}}));check(devices.sequence.tracks.back().monitoring,"Camera assignment did not enable preview");
+        edit(devices,"track.create",object({{"type","audio"}}));const auto microphoneTrack=devices.sequence.tracks.back().id;
+        edit(devices,"track.preferences",object({{"trackId",microphoneTrack},{"monitoring",true}}));
+        edit(devices,"track.source",object({{"trackId",microphoneTrack},{"source",object({{"category","microphone"},{"identity","microphone:unavailable-saved"},{"settings",object({{"sampleRate",48000},{"channels",2}})}})}}));
+        check(!devices.sequence.tracks.back().monitoring,"New microphone assignment enabled speaker monitoring");
+        const auto deviceJson=juce::JSON::toString(devices.sequence.toJson());Sequence deviceReopened;
+        check(Sequence::fromJson(juce::JSON::parse(deviceJson),deviceReopened,error),error.toRawUTF8());check(deviceJson==juce::JSON::toString(deviceReopened.toJson()),"Device identities/native formats changed on reopen");
+        edit(devices,"track.source",object({{"trackId",cameraTrack},{"source",juce::var()}}));devices.undo.undo();check(juce::JSON::toString(devices.sequence.tracks[(size_t)devices.sequence.findTrack(cameraTrack)].source)==juce::JSON::toString(cameraConfig),"Device source undo changed format identity");devices.undo.redo();check(devices.sequence.tracks[(size_t)devices.sequence.findTrack(cameraTrack)].source.isVoid(),"Device source redo failed");
         runEffectsTests();
         runAutomationTests();
         runTransitionTests();

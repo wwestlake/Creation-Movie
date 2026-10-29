@@ -1,5 +1,32 @@
 # Djehuti Movie implementation handoff
 
+## October 28 - Multisource Capture Phase 3: ready for review
+
+Started from merged Phase 2 master `91598ba` on
+`feat/movie-camera-microphone-capture`. The existing capture manager now owns
+Media Foundation camera and WASAPI microphone adapters, supported-format
+selection, shared subscriptions, Source Monitor preview/meters and independent
+microphone listening through the existing output callback. New microphone
+assignments leave listening off; use headphones. No recording or Phase 4 work.
+
+See [the full Phase 3 report](docs/CAPTURE_PHASE_3.md). Debug builds and document
+tests passed, as did 37 native device checks, 10 mounted device-interface groups,
+9 display/window-interface groups and all 18 editing/playback/export groups.
+Physical C920 camera and microphone and USB Audio CODEC audio provided actual
+hardware evidence; virtual endpoints are identified separately. Simultaneous
+camera/microphone/display acquisition passed. Human audibility, physical unplug,
+permission-denial toggling and broad driver/format coverage remain unverified.
+GUI events were synthesized; no native pointer-input claim. Original projects
+were restored; validation content remains ignored under build/.
+
+Movie requires a PR/review before integration. The merged Phase 2 branch was
+removed locally/remotely. Its umbrella gitlink is submitted as Suite PR #209
+(`4ecf6bb`), but unchanged Station code fails the Requirements R3 check on both
+umbrella master and that PR. Do not bypass it or include Phase 3's unmerged
+commit in the umbrella. After Movie Phase 3 merges, complete its own gitlink PR
+and branch cleanup. Existing installed VFS service was started for tests;
+settings/shared code were unchanged.
+
 ## October 28 - Multisource Capture Phase 2: ready for review
 
 Implementation and validation are complete on `feat/movie-screen-window-capture`,

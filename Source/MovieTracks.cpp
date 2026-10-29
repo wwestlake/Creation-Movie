@@ -29,6 +29,7 @@ bool sourceValid(const Track& t, juce::String& error)
         if (!settings.isObject()) return fail();
         for (const auto& p : settings.getDynamicObject()->getProperties())
         {
+            if(p.name==juce::Identifier("format")){if(!p.value.isString() || p.value.toString().length()>80 || p.value.toString().isEmpty())return fail();continue;}
             if (!oneOf(p.name.toString(), "width|height|fpsNum|fpsDen|sampleRate|channels|channel")) return fail();
             if (!finiteNumber(p.value) || (double)p.value < 0 || (double)p.value > 1000000) return fail();
         }
