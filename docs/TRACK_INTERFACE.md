@@ -20,7 +20,8 @@ undoable `movie.track.*` commands.
   visibly dimmed and retain the existing preview/export enable semantics.
 - Arm/Mon preferences are shown on audio/video headers of at least 64 pixels.
   Arm remains an inactive recording preference. Display/window sources have a
-  functional Live capture preview toggle; other source monitoring is inactive.
+  functional Live capture preview toggle; cameras reuse it. Microphones have an
+  independent Listen checkbox and live input levels; system-audio monitoring is inactive.
 - Remove Track is available above the timeline, in the inspector and in the
   header context menu. Configured/occupied tracks require confirmation. Imported
   media is kept. Existing target-reference validation can reject removal.
@@ -50,7 +51,13 @@ Source Monitor. Apply Source assigns the selected catalog ID and enables that
 track's preview subscription; Clear Source removes it. Multiple tracks selecting
 the same source share physical acquisition. Source Monitor can pause/stop preview.
 Window selections expire across app restarts and require explicit reselection.
-Camera and microphone/system-audio entries remain **saved configuration only**.
+Camera and microphone choices use the device catalog and a complete supported
+format picker. Camera preview shares Source Monitor. Enabled microphone tracks
+acquire input levels independently of listening; new assignments leave listening
+off. Use headphones before enabling the Listen checkbox. Multiple tracks share
+one compatible device acquisition; incompatible requested formats report a
+conflict. System audio remains **saved configuration only**. See
+[Capture Phase 3](CAPTURE_PHASE_3.md) for format, validation and hardware limits.
 Neither source assignment nor clearing changes existing clips; recording remains
 inactive. See [Capture Phase 2](CAPTURE_PHASE_2.md).
 
@@ -90,6 +97,6 @@ regression checks for migration, persistence, playback and export.
 
 Milestone 4 adds automation keyframe lanes and editing through the Effects dock;
 see [Automation](AUTOMATION.md). Historical "stored only" limitations above
-are superseded for resolved effect-parameter targets. Capture Phase 2 adds live
-display/window preview; other source monitoring and effects-track routing remain
-deferred.
+are superseded for resolved effect-parameter targets. Capture Phase 2 adds live display/window preview. Phase 3 adds camera preview
+and independent microphone listening; system-audio monitoring and effects-track
+routing remain deferred.

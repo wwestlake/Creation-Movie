@@ -8,7 +8,7 @@ public:
     {
         addAndMakeVisible(view);view.setViewedComponent(&form,false);view.setScrollBarsShown(true,false);
         for(auto* c:std::initializer_list<juce::Component*>{&heading,&nameLabel,&name,&typeLabel,&type,&enabled,&armed,&monitor,
-            &heightLabel,&height,&sourceLabel,&category,&media,&identity,&settingsLabel,&widthLabel,&pixelsLabel,&fpsLabel,&rateLabel,&channelsLabel,&width,&pixels,&fps,&rate,&channels,&applySource,&clearSource,&note,&automation,&remove,&effects,&rescan})form.addAndMakeVisible(c);
+            &heightLabel,&height,&sourceLabel,&category,&media,&identity,&settingsLabel,&widthLabel,&pixelsLabel,&fpsLabel,&rateLabel,&channelsLabel,&width,&pixels,&fps,&rate,&channels,&applySource,&clearSource,&note,&automation,&remove,&effects,&rescan,&captureFormat,&signal})form.addAndMakeVisible(c);
         heading.setText("Track Inspector",juce::dontSendNotification);
         nameLabel.setText("Name",juce::dontSendNotification);typeLabel.setText("Type",juce::dontSendNotification);
         heightLabel.setText("Lane height",juce::dontSendNotification);sourceLabel.setText("Source",juce::dontSendNotification);
@@ -17,7 +17,7 @@ public:
         fpsLabel.setText("Frame rate numerator",juce::dontSendNotification);rateLabel.setText("Sample rate (Hz)",juce::dontSendNotification);channelsLabel.setText("Channels",juce::dontSendNotification);
         for(const auto* token:{"video","audio","image","effects","automation"})type.addItem(juce::String(token).toUpperCase(),type.getNumItems()+1);
         height.addItem("Compact / 64",64);height.addItem("Standard / 100",100);height.addItem("Large / 140",140);height.addItem("Extra large / 200",200);
-        name.setName("Track name");type.setName("Track type");category.setName("Track source category");media.setName("Project media source");
+        name.setName("Track name");type.setName("Track type");category.setName("Track source category");media.setName("Project media source");captureFormat.setName("Supported capture format");
         identity.setName("Saved source label");identity.setTextToShowWhenEmpty("Saved device or window label",juce::Colours::grey);
         auto field=[](juce::TextEditor& e,const char* label){e.setName(label);e.setTextToShowWhenEmpty(label,juce::Colours::grey);e.setInputRestrictions(7,"0123456789");};
         field(width,"Width");field(pixels,"Height");field(fps,"Frames / sec");field(rate,"Samples / sec");field(channels,"Channels");
@@ -27,6 +27,7 @@ public:
         armed.onClick=[this]{mutate("preferences",movie::object({{"armed",armed.getToggleState()}}));};
         monitor.onClick=[this]{mutate("preferences",movie::object({{"monitoring",monitor.getToggleState()}}));};
         height.onChange=[this]{if(!syncing)mutate("preferences",movie::object({{"height",height.getSelectedId()}}));};
+        media.onChange=[this]{if(!syncing)populateFormats();};
         category.onChange=[this]{if(!syncing){populateMedia();layout();}};
         applySource.onClick=[this]{saveSource();};clearSource.onClick=[this]{mutate("source",movie::object({{"source",juce::var()}}));};
         rescan.onClick=[this]{owner.visualCapture.refresh();populateMedia();};
@@ -51,8 +52,8 @@ public:
             auto add=[&](const char* key,const char* label){categories.push_back(key);category.addItem(label,(int)categories.size());};
             add("none","No source assigned");
             if(t.type=="video" || t.type=="audio" || t.type=="image")add("media","Imported project media");
-            if(t.type=="video"){add("display","Screen / individual display");add("window","Application window");add("camera","Camera ... saved configuration only");}
-            if(t.type=="audio"){add("microphone","Microphone ... saved configuration only");add("systemAudio","System audio ... saved configuration only");}
+            if(t.type=="video"){add("display","Screen / individual display");add("window","Application window");add("camera","Camera");}
+            if(t.type=="audio"){add("microphone","Microphone");add("systemAudio","System audio ... saved configuration only");}
             const auto token=t.source["category"].toString();
             auto found=std::find(categories.begin(),categories.end(),token);
             category.setSelectedId(found==categories.end()?1:(int)(found-categories.begin())+1,juce::dontSendNotification);
@@ -86,9 +87,11 @@ public:
 public:
     void refreshCaptureChoices()
     {
-        const auto cat=selectedCategory();if(cat!="display" && cat!="window")return;
-        juce::String stamp;for(const auto& source:owner.visualCapture.sources())if(source.kind==cat)stamp+=source.id+source.name;
-        if(stamp!=catalogStamp){catalogStamp=stamp;populateMedia();}
+        const auto cat=selectedCategory();if(cat!="display" && cat!="window" && cat!="camera" && cat!="microphone")return;
+        juce::String stamp;for(const auto& source:owner.visualCapture.sources())if(source.kind==cat)stamp+=source.id+source.name+juce::JSON::toString(juce::var(source.formats));
+        if(stamp!=catalogStamp){catalogStamp=stamp;populateMedia();populateFormats();}
+        const auto p=owner.visualCapture.preview(owner.selectedTrack);
+        signal.setText((cat=="microphone"?"Input: "+p.state+" / "+juce::String(p.peak>0?20*std::log10(p.peak):-100,1)+" dBFS":"Video: "+p.state)+"\n"+p.message,juce::dontSendNotification);
     }
 private:
     juce::String selectedCategory()const
@@ -112,21 +115,22 @@ private:
         sourceLabel.setVisible(sources);category.setVisible(sources);applySource.setVisible(sources);clearSource.setVisible(sources);
         if(sources){row(sourceLabel,18);row(category);}
         const auto cat=selectedCategory();const bool live=cat!="none" && cat!="media";
-        const bool visual=cat=="display" || cat=="window";
-        monitor.setButtonText(visual?"Live capture preview":"Monitor preference (inactive)");
+        const bool device=cat=="camera" || cat=="microphone";const bool visual=cat=="display" || cat=="window" || device;
+        monitor.setButtonText(cat=="microphone"?"Listen to microphone (use headphones)":visual?"Live capture preview":"Monitor preference (inactive)");
         rescan.setVisible(sources && visual);
         media.setVisible(sources && (cat=="media" || visual));identity.setVisible(sources && live && !visual);
         if(sources && (cat=="media" || visual))row(media);
         if(sources && visual)row(rescan);
+        captureFormat.setVisible(device);signal.setVisible(device);if(device){row(captureFormat);row(signal,64);}
         if(sources && live && !visual)row(identity);
-        const bool videoSettings=live && !visual && t.type=="video",audioSettings=live && t.type=="audio";
+        const bool videoSettings=live && !visual && t.type=="video",audioSettings=live && !visual && t.type=="audio";
         widthLabel.setVisible(valid && videoSettings);pixelsLabel.setVisible(valid && videoSettings);fpsLabel.setVisible(valid && videoSettings);rateLabel.setVisible(valid && audioSettings);channelsLabel.setVisible(valid && audioSettings);
         settingsLabel.setVisible(live && !visual);width.setVisible(videoSettings);pixels.setVisible(videoSettings);fps.setVisible(videoSettings);rate.setVisible(audioSettings);channels.setVisible(audioSettings);
         if(live && !visual)row(settingsLabel,20);
         if(videoSettings){row(widthLabel,18);row(width);row(pixelsLabel,18);row(pixels);row(fpsLabel,18);row(fps);}
         if(audioSettings){row(rateLabel,18);row(rate);row(channelsLabel,18);row(channels);}
         if(sources){row(applySource);row(clearSource);}
-        note.setText(visual?"Apply a source to preview it in Source Monitor. Live preview starts on assignment; uncheck Live capture preview to stop. Tracks sharing a source use one acquisition. Window selections must be renewed after restarting Movie. Recording is not active.":live?"Configuration only. No live device discovery, capture or monitoring is active.":t.type=="effects"?"Effects-track routing is undefined. Use effects on a video, audio or image track.":"Source changes keep existing clips. Arm remains a saved preference only.",juce::dontSendNotification);
+        note.setText(device?"Select a supported device format, then Apply Source. Microphone levels run while the track is enabled. Listening is off for new assignments: use headphones to avoid speaker feedback. Shared tracks must request compatible formats. Recording is not active.":visual?"Apply a source to preview it in Source Monitor. Live preview starts on assignment; uncheck Live capture preview to stop. Tracks sharing a source use one acquisition. Window selections must be renewed after restarting Movie. Recording is not active.":live?"Configuration only. No live device discovery, capture or monitoring is active.":t.type=="effects"?"Effects-track routing is undefined. Use effects on a video, audio or image track.":"Source changes keep existing clips. Arm remains a saved preference only.",juce::dontSendNotification);
         row(note,visual?130:68);automation.setVisible(t.type=="automation");if(t.type=="automation")row(automation,100);
         row(remove);form.setSize(w+20,std::max(y,view.getHeight()));
     }
@@ -136,18 +140,41 @@ private:
         media.clear(juce::dontSendNotification);mediaIds.clear();
         const int i=owner.document.sequence.findTrack(owner.selectedTrack);if(i<0)return;
         const auto categoryToken=selectedCategory();
-        if(categoryToken=="display" || categoryToken=="window")
+        if(categoryToken=="display" || categoryToken=="window" || categoryToken=="camera" || categoryToken=="microphone")
         {
             if(chosen.isEmpty())chosen=owner.document.sequence.tracks[(size_t)i].source["identity"].toString();
             for(const auto& source:owner.visualCapture.sources())if(source.kind==categoryToken){mediaIds.push_back(source.id);media.addItem(source.name,(int)mediaIds.size());}
             for(size_t n=0;n<mediaIds.size();++n)if(mediaIds[n]==chosen)media.setSelectedId((int)n+1,juce::dontSendNotification);
-            media.setTextWhenNothingSelected("Choose an available "+categoryToken+"...");return;
+            media.setTextWhenNothingSelected("Choose an available "+categoryToken+"...");populateFormats();return;
         }
         const auto& typeToken=owner.document.sequence.tracks[(size_t)i].type;
         for(const auto& m:owner.document.sequence.media)
             if((typeToken=="video" && m.info.hasVideo) || (typeToken=="audio" && m.info.hasAudio) || (typeToken=="image" && m.info.still))
             {mediaIds.push_back(m.id);media.addItem(m.name,(int)mediaIds.size());}
         media.setTextWhenNothingSelected(mediaIds.empty()?"Import compatible media first":"Choose project media...");
+    }
+    void populateFormats()
+    {
+        const int selected=captureFormat.getSelectedId()-1;juce::var previous;
+        if(juce::isPositiveAndBelow(selected,formats.size()))previous=formats[selected];
+        captureFormat.clear(juce::dontSendNotification);formats.clear();
+        const int mi=media.getSelectedId()-1;if(!juce::isPositiveAndBelow(mi,(int)mediaIds.size()))return;
+        const int ti=owner.document.sequence.findTrack(owner.selectedTrack);
+        if((syncing || previous.isVoid()) && ti>=0)previous=owner.document.sequence.tracks[(size_t)ti].source["settings"];
+        for(const auto& source:owner.visualCapture.sources())if(source.id==mediaIds[(size_t)mi])
+            for(const auto& f:source.formats)
+            {
+                formats.add(f);juce::String label;
+                juce::String subtype=f["format"].toString();const auto fourcc=(juce::uint32)subtype.substring(1,9).getHexValue32();juce::String readable;
+                for(int byte=0;byte<4;++byte){const auto c=(juce::juce_wchar)((fourcc>>(byte*8))&255);if(c<32 || c>126){readable={};break;}readable+=juce::String::charToString(c);}
+                if(readable.isNotEmpty())subtype=readable;
+                if(source.kind=="camera")label=juce::String((int)f["width"])+" x "+juce::String((int)f["height"])+" / "+juce::String((int)f["fpsNum"]/(double)std::max(1,(int)f["fpsDen"]),3)+" fps / "+subtype;
+                else label=juce::String((int)f["sampleRate"])+" Hz / "+juce::String((int)f["channels"])+" channels / float32";
+                captureFormat.addItem(label,formats.size());
+                if(juce::JSON::toString(previous)==juce::JSON::toString(f))captureFormat.setSelectedId(formats.size(),juce::dontSendNotification);
+            }
+        if(captureFormat.getSelectedId()==0 && formats.size()>0)captureFormat.setSelectedId(1,juce::dontSendNotification);
+        captureFormat.setTextWhenNothingSelected("No supported formats available");
     }
     void rename()
     {
@@ -164,7 +191,7 @@ private:
         const auto cat=selectedCategory();
         if(cat=="none"){mutate("source",movie::object({{"source",juce::var()}}));return;}
         juce::String id=identity.getText().trim();
-        if(cat=="media" || cat=="display" || cat=="window")
+        if(cat=="media" || cat=="display" || cat=="window" || cat=="camera" || cat=="microphone")
         {
             const int mi=media.getSelectedId()-1;
             if(!juce::isPositiveAndBelow(mi,(int)mediaIds.size())){owner.warn("Choose an available source first.");return;}
@@ -179,14 +206,17 @@ private:
         put(width,"width");put(pixels,"height");put(fps,"fpsNum");put(rate,"sampleRate");put(channels,"channels");
         if(fps.isVisible() && fps.getText().isNotEmpty() && (ti<0 || fps.getText()!=owner.document.sequence.tracks[(size_t)ti].source["settings"]["fpsNum"].toString()))
             settings.getDynamicObject()->setProperty("fpsDen",1);
+        if(cat=="camera" || cat=="microphone")
+        {const int fi=captureFormat.getSelectedId()-1;if(!juce::isPositiveAndBelow(fi,formats.size())){owner.warn("Choose a supported capture format first.");return;}settings=formats[fi].clone();}
         mutate("source",movie::object({{"source",movie::object({{"category",cat},{"identity",id},{"settings",settings}})}}));
-        if(cat=="display" || cat=="window"){owner.selectedMedia={};owner.sourcePlayback.play(false);owner.syncVisualCapture();owner.dock->activatePanel("source");}
+        if(cat=="display" || cat=="window" || cat=="camera" || cat=="microphone"){owner.selectedMedia={};owner.sourcePlayback.play(false);owner.syncVisualCapture();owner.dock->activatePanel("source");}
     }
     MainComponent& owner;juce::Viewport view;juce::Component form;bool syncing=false,valid=false;juce::String trackId;
     std::vector<juce::String> types{"video","audio","image","effects","automation"},categories,mediaIds;
     juce::Label heading,nameLabel,typeLabel,heightLabel,sourceLabel,settingsLabel,note,automation,widthLabel,pixelsLabel,fpsLabel,rateLabel,channelsLabel;
     juce::TextEditor name,identity,width,pixels,fps,rate,channels;
-    juce::ComboBox type,height,category,media;
+    juce::ComboBox type,height,category,media,captureFormat;
+    juce::Label signal;juce::Array<juce::var> formats;
     juce::ToggleButton enabled{"Enabled"},armed{"Arm preference (no recording)"},monitor{"Monitor preference (inactive)"};
     juce::TextButton applySource{"Apply Source"},clearSource{"Clear Source"},remove{"Remove Track..."};
     juce::TextButton effects{"Effects Browser / Inspector..."};
@@ -198,7 +228,7 @@ void MainComponent::selectTrack(const juce::String& id,bool showInspector)
     if(document.sequence.findTrack(id)<0)return;
     selectedTransition={};selectedTrack=id;selectedClip={};
     const auto cat=document.sequence.tracks[(size_t)document.sequence.findTrack(id)].source["category"].toString();
-    if(cat=="display" || cat=="window"){selectedMedia={};sourcePlayback.play(false);if(dock)dock->activatePanel("source");}
+    if(cat=="display" || cat=="window" || cat=="camera" || cat=="microphone"){selectedMedia={};sourcePlayback.play(false);if(dock)dock->activatePanel("source");}
     if(trackInspector)trackInspector->sync();
     if(effectsPanel)effectsPanel->sync();
     if(inspector)inspector->syncFromSelection();

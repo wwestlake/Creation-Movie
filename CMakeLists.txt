@@ -123,7 +123,7 @@ target_sources(CreationMovieApp PRIVATE
     Source/EffectsPanel.inc
     Source/MovieDocument.cpp
     Source/MovieTracks.cpp
-    Source/MovieVisualCapture.cpp Source/MovieVisualCapture.h
+    Source/MovieVisualCapture.cpp Source/MovieDeviceCapture.cpp Source/MovieVisualCapture.h
     Source/MovieTransitions.cpp Source/MovieTransitions.h Source/TransitionPanel.inc Source/MovieTransitionCards.h
     Source/MovieAutomation.cpp Source/MovieAutomation.h
     Source/MovieEffects.cpp
@@ -170,7 +170,7 @@ target_link_libraries(CreationMovieApp PRIVATE
 )
 
 if(WIN32)
-    target_link_libraries(CreationMovieApp PRIVATE windowsapp d3d11 dxgi dwmapi)
+    target_link_libraries(CreationMovieApp PRIVATE windowsapp d3d11 dxgi dwmapi mfplat mfreadwrite mfuuid mf ole32 propsys)
 endif()
 
 install(TARGETS CreationMovieApp
@@ -200,9 +200,9 @@ target_link_libraries(MovieDocumentTests PRIVATE creation_suite_timeline juce::j
 target_compile_definitions(MovieDocumentTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 
 if(WIN32)
-    add_executable(MovieVisualCaptureTests tests/VisualCaptureTests.cpp Source/MovieVisualCapture.cpp)
+    add_executable(MovieVisualCaptureTests tests/VisualCaptureTests.cpp Source/MovieVisualCapture.cpp Source/MovieDeviceCapture.cpp)
     target_include_directories(MovieVisualCaptureTests PRIVATE Source)
-    target_link_libraries(MovieVisualCaptureTests PRIVATE juce::juce_gui_basics windowsapp d3d11 dxgi dwmapi)
+    target_link_libraries(MovieVisualCaptureTests PRIVATE juce::juce_gui_basics windowsapp d3d11 dxgi dwmapi mfplat mfreadwrite mfuuid mf ole32 propsys)
     target_compile_definitions(MovieVisualCaptureTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 endif()
 enable_testing()

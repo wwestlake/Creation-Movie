@@ -237,10 +237,10 @@ bool Document::edit(const juce::String& command,const juce::var& a,juce::String&
             else if(action=="enabled") {if(!a["enabled"].isBool()) return fail("enabled must be boolean.");t.enabled=a["enabled"];}
             else if(action=="source")
             {
-                const auto previous=t.source["category"].toString();t.source=a["source"].clone();
+                const auto previous=t.source["category"].toString(),previousIdentity=t.source["identity"].toString();t.source=a["source"].clone();
                 const auto category=t.source["category"].toString();
-                if(category=="display" || category=="window")t.monitoring=true;
-                else if(previous=="display" || previous=="window")t.monitoring=false;
+                if(category=="display" || category=="window" || category=="camera")t.monitoring=true;
+                else if(previous=="display" || previous=="window" || previous=="camera" || (category=="microphone" && (previous!="microphone" || previousIdentity!=t.source["identity"].toString())))t.monitoring=false;
             }
             else if(action=="preferences")
             {

@@ -1,4 +1,5 @@
 #include "MovieVisualCapture.h"
+#include "MovieDeviceCapture.h"
 #include <atomic>
 #include <map>
 #include <mutex>
@@ -23,10 +24,11 @@ juce::var VisualSource::toJson() const
 {
     auto* value=new juce::DynamicObject;
     value->setProperty("id",id);value->setProperty("kind",kind);value->setProperty("name",name);
-    value->setProperty("width",width);value->setProperty("height",height);return juce::var(value);
+    value->setProperty("formats",formats);value->setProperty("width",width);value->setProperty("height",height);return juce::var(value);
 }
 struct VisualCapture::Impl
 {
+    DeviceCapture devices;
     mutable std::mutex mutex;
     std::vector<VisualSource> catalog;
     std::vector<VisualBinding> bindings;
@@ -176,7 +178,7 @@ struct VisualCapture::Impl
                 if(requested)failed.clear();
                 if(requested || now>=scanAt){discover();scanAt=now+std::chrono::seconds(2);}
                 std::vector<VisualBinding> wanted;{std::lock_guard lock(mutex);wanted=bindings;}
-                std::map<juce::String,int> counts;for(const auto& b:wanted)if(b.active)++counts[b.sourceId];
+                std::map<juce::String,int> counts;for(const auto& b:wanted)if(b.active && !b.sourceId.startsWith("camera:") && !b.sourceId.startsWith("microphone:"))++counts[b.sourceId];
                 for(auto it=sessions.begin();it!=sessions.end();)if(!counts.count(it->first) || !targets.count(it->first)
                     || it->second->target.monitor!=targets[it->first].monitor)it=sessions.erase(it);else ++it;
                 for(auto it=failed.begin();it!=failed.end();)if(!counts.count(it->first) || !targets.count(it->first))it=failed.erase(it);else ++it;
@@ -212,15 +214,16 @@ struct VisualCapture::Impl
 };
 VisualCapture::VisualCapture():impl(std::make_unique<Impl>()){}
 VisualCapture::~VisualCapture()=default;
-std::vector<VisualSource> VisualCapture::sources() const {std::lock_guard lock(impl->mutex);return impl->catalog;}
-void VisualCapture::refresh(){impl->rescan=true;}
-void VisualCapture::setBindings(std::vector<VisualBinding> bindings){std::lock_guard lock(impl->mutex);impl->bindings=std::move(bindings);}
+std::vector<VisualSource> VisualCapture::sources() const {std::lock_guard lock(impl->mutex);auto result=impl->catalog;const auto devices=impl->devices.sources();result.insert(result.end(),devices.begin(),devices.end());return result;}
+void VisualCapture::refresh(){impl->rescan=true;impl->devices.refresh();}
+void VisualCapture::setBindings(std::vector<VisualBinding> bindings){std::lock_guard lock(impl->mutex);std::vector<VisualBinding> devices;for(const auto& b:bindings)if(b.sourceId.startsWith("camera:") || b.sourceId.startsWith("microphone:"))devices.push_back(b);impl->devices.setBindings(std::move(devices));impl->bindings=std::move(bindings);}
 VisualPreview VisualCapture::preview(const juce::String& track) const
 {
     std::lock_guard lock(impl->mutex);VisualPreview result;
+    for(const auto& b:impl->bindings)if(b.trackId==track && (b.sourceId.startsWith("camera:") || b.sourceId.startsWith("microphone:")))return impl->devices.preview(track);
     if(impl->problem.isNotEmpty()){result.state="failed";result.message=impl->problem;return result;}
     for(const auto& b:impl->bindings)if(b.trackId==track)
-    {if(!b.active){result.message="Live preview stopped.";return result;}const auto it=impl->snapshots.find(b.sourceId);if(it!=impl->snapshots.end())return it->second;result.state="starting";return result;}
+    {if(b.sourceId.startsWith("camera:") || b.sourceId.startsWith("microphone:"))return impl->devices.preview(track);if(!b.active){result.message="Live preview stopped.";return result;}const auto it=impl->snapshots.find(b.sourceId);if(it!=impl->snapshots.end())return it->second;result.state="starting";return result;}
     result.message="No display or window assigned.";return result;
 }
 juce::var VisualCapture::status() const
@@ -232,6 +235,20 @@ juce::var VisualCapture::status() const
         o->setProperty("message",p.message);o->setProperty("subscribers",p.subscribers);o->setProperty("frames",p.frameNumber);
         o->setProperty("timestamp100ns",p.timestamp100ns);o->setProperty("width",p.image.getWidth());o->setProperty("height",p.image.getHeight());entries.add(juce::var(o));
     }
-    auto* result=new juce::DynamicObject;result->setProperty("sources",entries);result->setProperty("activeAcquisitions",impl->activeAcquisitions);result->setProperty("error",impl->problem);return juce::var(result);
+    const auto deviceStatus=impl->devices.status();if(const auto* list=deviceStatus["sources"].getArray())entries.addArray(*list);
+    auto* result=new juce::DynamicObject;result->setProperty("sources",entries);result->setProperty("activeAcquisitions",impl->activeAcquisitions+(int)deviceStatus["activeAcquisitions"]);result->setProperty("error",impl->problem+deviceStatus["error"].toString());result->setProperty("monitorDroppedFrames",deviceStatus["monitorDroppedFrames"]);result->setProperty("monitorRenderedFrames",deviceStatus["monitorRenderedFrames"]);result->setProperty("deviceDiscoveryComplete",deviceStatus["deviceDiscoveryComplete"]);return juce::var(result);
 }
+juce::String VisualCapture::validate(const juce::String& id,const juce::String& kind,const juce::var& settings)const
+{
+    for(const auto& source:sources())if(source.id==id && source.kind==kind)
+    {
+        if(kind!="camera" && kind!="microphone")return {};
+        for(const auto& format:source.formats)if(captureFormatMatches(format,settings))return {};
+        return "The requested device format is not supported. Choose a format from the capture catalog.";
+    }
+    return "Source unavailable. Refresh sources; saved unavailable assignments are preserved.";
+}
+void VisualCapture::renderAudio(float*const* outputs,int channels,int frames,double rate)
+{impl->devices.renderAudio(outputs,channels,frames,rate);}
+
 }

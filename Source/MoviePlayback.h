@@ -7,6 +7,7 @@
 
 namespace movie
 {
+class VisualCapture;
 // Audio is the transport clock. The device callback only consumes prepared
 // blocks: no codec, VFS, lock, allocation or GUI work on the audio thread.
 class Playback final : private juce::AudioIODeviceCallback
@@ -15,6 +16,7 @@ public:
     Playback();
     ~Playback() override;
     juce::String initialiseAudio();
+    void setCaptureMonitor(VisualCapture* capture);
     void setSequence(const Sequence&);
     void seek(double);
     void play(bool);
@@ -43,5 +45,6 @@ private:
     juce::Image image;juce::String problem;
     std::thread audioWorker,videoWorker;
     juce::AudioDeviceManager device;
+    std::atomic<VisualCapture*> captureMonitor{nullptr};
 };
 }

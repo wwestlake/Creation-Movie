@@ -4,7 +4,7 @@
 class MainComponent::TrackUiCheck final : private juce::Timer
 {
 public:
-    TrackUiCheck(MainComponent& component,juce::File destination,juce::File media,bool effects=false,bool automated=false,bool transitions=false,bool capture=false,juce::File fixture={}):owner(component),output(std::move(destination)),inputVideo(std::move(media)),effectsMode(effects),automationMode(automated),transitionMode(transitions),captureMode(capture),fixtureExecutable(std::move(fixture))
+    TrackUiCheck(MainComponent& component,juce::File destination,juce::File media,bool effects=false,bool automated=false,bool transitions=false,bool capture=false,juce::File fixture={},bool devices=false):owner(component),output(std::move(destination)),inputVideo(std::move(media)),effectsMode(effects),automationMode(automated),transitionMode(transitions),captureMode(capture),fixtureExecutable(std::move(fixture)),deviceMode(devices)
     {
         original=owner.session.getProjectId();output.createDirectory();startTimer(250);
     }
@@ -12,6 +12,7 @@ public:
 private:
     #include "TransitionUiCheck.inc"
     #include "CaptureUiCheck.inc"
+    #include "DeviceCaptureUiCheck.inc"
     void openCurve(const juce::String& track,const char* type,const char* parameter)
     {
         owner.selectTrack(track,false);owner.dock->activatePanel("effects");auto& panel=*owner.effectsPanel;
@@ -148,10 +149,10 @@ private:
                     inspector.armed.triggerClick();inspector.monitor.triggerClick();break;
                 case 10:
                     require(owner.document.sequence.tracks[0].armed && owner.document.sequence.tracks[0].monitoring,"Preference controls failed");
-                    inspector.category.setSelectedId(5,juce::sendNotificationSync);inspector.identity.setText("Demo camera (configuration only)",false);
-                    inspector.width.setText("1280",false);inspector.pixels.setText("720",false);inspector.fps.setText("30",false);inspector.applySource.triggerClick();break;
+                    inspector.category.setSelectedId(3,juce::sendNotificationSync);inspector.populateMedia();
+                    require(!inspector.mediaIds.empty(),"No physical display available for source controls check");inspector.media.setSelectedId(1,juce::sendNotificationSync);inspector.applySource.triggerClick();break;
                 case 11:
-                    require(owner.document.sequence.tracks[0].source["category"].toString()=="camera","Source controls failed");
+                    require(owner.document.sequence.tracks[0].source["category"].toString()=="display","Source controls failed");
                     inspector.height.setSelectedId(140,juce::sendNotificationSync);
                     require(owner.document.sequence.tracks[0].heightPixels==140,"Height control failed");
                     passed("Name, enable, arm, monitor, source and lane-height GUI controls mutate the authoritative document");break;
@@ -228,6 +229,7 @@ private:
                 case 17:
                     require(saved==juce::JSON::toString(owner.document.sequence.toJson()),"GUI edits did not survive save/reopen");
                     require(owner.document.sequence.findTrack(video)==1,"Stable identity lost on reopen");passed("GUI-edited multitrack project saves and reopens identically");
+                    if(deviceMode){step=240;break;}
                     if(captureMode){step=200;break;}
                     if(effectsMode){owner.selectTrack(video);owner.dock->activatePanel("effects");insertEffect("video.colour");step=30;}
                     else{record();owner.runUi("movie.project.open",movie::object({{"projectId",original},{"discardChanges",true}}));step=90;}break;
@@ -306,7 +308,7 @@ private:
                     require(owner.playback.position()>0 && owner.playback.error().isEmpty(),"Automated playback restart failed");owner.playback.play(false);
                     passed("Automation survives VFS reopen, exports processed FFV1/MP4 and plays/restarts through the existing transport");if(transitionMode){step=100;break;}record();owner.runUi("movie.project.open",movie::object({{"projectId",original},{"discardChanges",true}}));step=90;break;
                 case 90:stopTimer();owner.requestQuit();break;
-                default:if(captureMode && step>=201 && step<=230)captureStep(step-1);else if(transitionMode && step>=101 && step<=130)transitionStep(step-1);break;
+                default:if(deviceMode && step>=241 && step<=270)deviceStep(step-1);else if(captureMode && step>=201 && step<=230)captureStep(step-1);else if(transitionMode && step>=101 && step<=130)transitionStep(step-1);break;
             }
         }
         catch(const std::exception& e)
@@ -317,6 +319,6 @@ private:
         }
     }
     MainComponent& owner;juce::File output,inputVideo;juce::String original,project,video,audio,image,saved,error;juce::Array<juce::var> checks;int step=0;bool effectsMode=false,automationMode=false,transitionMode=false;juce::StringArray transitionClips;juce::String dissolveId;juce::String automationLane;
-    bool captureMode=false;juce::File fixtureExecutable;juce::ChildProcess captureFixture;
+    bool deviceMode=false;bool captureMode=false;juce::File fixtureExecutable;juce::ChildProcess captureFixture;
 };
 #endif
