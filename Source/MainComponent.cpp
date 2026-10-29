@@ -198,6 +198,8 @@ public:
     {
         playBtn.onClick = [this]
         {
+            if(sourceMode && owner.liveSourceSelected())
+            {const auto& s=owner.document.sequence;const auto& track=s.tracks[(size_t)s.findTrack(owner.selectedTrack)];owner.runUi("movie.track.preferences",movie::object({{"trackId",track.id},{"monitoring",!track.monitoring}}));return;}
             if (sourceMode)
                 player.play(! player.playing());
             else
@@ -205,6 +207,8 @@ public:
         };
         stopBtn.onClick = [this]
         {
+            if(sourceMode && owner.liveSourceSelected())
+            {owner.runUi("movie.track.preferences",movie::object({{"trackId",owner.selectedTrack},{"monitoring",false}}));return;}
             if (sourceMode)
             {
                 player.play(false);
@@ -252,7 +256,9 @@ public:
         auto controls = bounds.removeFromBottom(32);
         auto scrubBar = bounds.removeFromBottom(16).reduced(2, 4);
 
-        const auto frame = player.preview();
+        const bool live=sourceMode && owner.liveSourceSelected();
+        const auto capture=live?owner.visualCapture.preview(owner.selectedTrack):movie::VisualPreview{};
+        const auto frame = live?capture.image:player.preview();
         if (frame.isValid())
         {
             g.drawImageWithin(frame, bounds.getX(), bounds.getY(), bounds.getWidth(), bounds.getHeight(),
@@ -262,7 +268,7 @@ public:
         {
             g.setColour(juce::Colours::white.withAlpha(0.35f));
             g.setFont(juce::FontOptions(14.0f));
-            g.drawText(sourceMode ? "Source Monitor: Select a media asset to preview"
+            g.drawText(live?"Capture: "+capture.state+" — "+capture.message:sourceMode ? "Source Monitor: Select a media asset or capture track"
                                   : "Program Monitor: Place media on timeline to preview",
                        bounds, juce::Justification::centred);
         }
@@ -274,7 +280,7 @@ public:
         g.setFont(juce::FontOptions(12.0f, juce::Font::bold));
         const auto& seq = owner.document.sequence;
         const auto tc = formatTimecode(player.position(), seq.fpsNum, seq.fpsDen);
-        g.drawText((sourceMode ? "SRC  " : "PGM  ") + tc,
+        g.drawText(live?"LIVE / "+capture.state:(sourceMode ? "SRC  " : "PGM  ") + tc,
                    bounds.getX() + 14, bounds.getY() + 8, 208, 24, juce::Justification::centredLeft);
 
         // Scrub bar
@@ -295,7 +301,8 @@ public:
             g.setColour(creation_movie::branding::accentColour());
             g.fillRoundedRectangle(filled.toFloat(), 3.0f);
         }
-        playBtn.setButtonText(player.playing() ? "Pause" : "Play");
+        playBtn.setButtonText(live?(capture.state=="stopped"?"Preview":"Pause preview"):player.playing() ? "Pause" : "Play");
+        stepBackBtn.setEnabled(!live);stepFwdBtn.setEnabled(!live);
         juce::ignoreUnused(controls);
     }
 
@@ -317,6 +324,7 @@ public:
 private:
     void scrubAt(const juce::MouseEvent& e)
     {
+        if(sourceMode && owner.liveSourceSelected())return;
         auto bounds = getLocalBounds().reduced(8);
         bounds.removeFromBottom(32);
         auto scrubBar = bounds.removeFromBottom(16);
@@ -682,6 +690,9 @@ MainComponent::MainComponent()
     if(testArgument>=0 && testArgument+1<arguments.size())
         trackUiCheck=std::make_unique<TrackUiCheck>(*this,juce::File(arguments[testArgument+1].unquoted()),
             testArgument+2<arguments.size()?juce::File(arguments[testArgument+2].unquoted()):juce::File(),arguments.contains("--effects-ui-check") || arguments.contains("--automation-ui-check") || arguments.contains("--transitions-ui-check"),arguments.contains("--automation-ui-check") || arguments.contains("--transitions-ui-check"),arguments.contains("--transitions-ui-check"));
+    const int captureArgument=arguments.indexOf("--capture-ui-check");
+    if(captureArgument>=0 && captureArgument+3<arguments.size())
+        trackUiCheck=std::make_unique<TrackUiCheck>(*this,juce::File(arguments[captureArgument+1].unquoted()),juce::File(arguments[captureArgument+2].unquoted()),false,false,false,true,juce::File(arguments[captureArgument+3].unquoted()));
 #endif
 }
 
@@ -876,6 +887,8 @@ MainComponent::Result MainComponent::execute(const juce::String& name, const juc
         return Result::success(state());
     if (name == "movie.jobs.get")
         return Result::success(jobs());
+    if(name=="movie.capture.sources"){juce::Array<juce::var> list;for(const auto& source:visualCapture.sources())list.add(source.toJson());return Result::success(list);}
+    if(name=="movie.capture.status")return Result::success(visualCapture.status());
     if(name=="movie.transition.catalog")return Result::success(movie::transitionCatalog());
     if(name=="movie.transition.list"){juce::Array<juce::var> list;for(const auto& tr:document.sequence.transitions)list.add(tr.toJson());return Result::success(list);}
     if(name=="movie.transition.get")
@@ -1093,6 +1106,16 @@ MainComponent::Result MainComponent::execute(const juce::String& name, const juc
     }
     if(name.startsWith("movie.track."))
     {
+        if(name=="movie.track.source")
+        {
+            const auto category=a["source"]["category"].toString(),id=a["source"]["identity"].toString();
+            if(category=="display" || category=="window")
+            {
+                const auto catalog=visualCapture.sources();
+                if(std::none_of(catalog.begin(),catalog.end(),[&](const movie::VisualSource& source){return source.id==id && source.kind==category;}))
+                    return Result::failure("unavailable_source","Choose an available source from movie.capture.sources. Saved unavailable assignments are retained on project load.");
+            }
+        }
         juce::String error;
         if(!document.edit(name.fromFirstOccurrenceOf("movie.",false,false),a,error))
             return Result::failure("edit_rejected",error);
@@ -1280,6 +1303,8 @@ void MainComponent::registerCommands()
     reg("movie.jobs.get", "Get Background Jobs", "Returns the current or most recent background media job status.",
         Effect::read, schemaObj({}));
     reg("movie.track.list", "List Tracks", "Returns tracks in display order.", Effect::read, schemaObj({}));
+    reg("movie.capture.sources","Capture Sources","Current display/window catalog. Assign a returned ID through movie.track.source on an existing video track.",Effect::read,schemaObj({}));
+    reg("movie.capture.status","Capture Preview Status","Shared acquisition state, subscribers, frame counters and QPC timestamps. No recording.",Effect::read,schemaObj({}));
     reg("movie.transition.catalog","Transition Catalog","Available transition types, defaults, units and ranges.",Effect::read,schemaObj({}));
     reg("movie.transition.list","List Transitions","All saved transition definitions.",Effect::read,schemaObj({}));
     auto transitionSchema=schemaObj({{"transitionId",movie::object({{"type","string"}})},{"trackId",movie::object({{"type","string"}})},
@@ -1770,6 +1795,7 @@ void MainComponent::warn(const juce::String& msg)
 
 void MainComponent::timerCallback()
 {
+    syncVisualCapture();
     const double pos = playback.position();
     if (std::abs(pos - lastPreviewTime) > 1e-4)
     {
@@ -1788,6 +1814,22 @@ void MainComponent::timerCallback()
         execute("movie.project.save", movie::object({}));
     }
     refresh();
+}
+
+bool MainComponent::liveSourceSelected() const
+{
+    if(selectedMedia.isNotEmpty())return false;
+    const int i=document.sequence.findTrack(selectedTrack);if(i<0)return false;
+    const auto category=document.sequence.tracks[(size_t)i].source["category"].toString();return category=="display" || category=="window";
+}
+void MainComponent::syncVisualCapture()
+{
+    std::vector<movie::VisualBinding> bindings;
+    for(const auto& track:document.sequence.tracks)
+    {const auto category=track.source["category"].toString();if(track.type=="video" && (category=="display" || category=="window"))bindings.push_back({track.id,track.source["identity"].toString(),track.enabled && track.monitoring});}
+    visualCapture.setBindings(std::move(bindings));
+    if(trackInspector)trackInspector->refreshCaptureChoices();
+    if(liveSourceSelected() && sourceMonitor)sourceMonitor->repaint();
 }
 
 juce::StringArray MainComponent::getMenuBarNames()

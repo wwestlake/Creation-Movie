@@ -60,6 +60,12 @@ int main()
         check(before==juce::JSON::toString(d.sequence.toJson()),"Failed operation mutated document");
         edit(d,"track.source",object({{"trackId",first},{"source",juce::var()}}));
         check(d.sequence.tracks[7].source.isVoid(),"Source clear failed");
+        edit(d,"track.source",object({{"trackId",first},{"source",object({{"category","display"},{"identity","display:test-monitor"}})}}));
+        check(d.sequence.tracks[7].monitoring,"Visual assignment did not enable preview");
+        const auto captureSaved=juce::JSON::toString(d.sequence.toJson());Sequence captureReopened;
+        check(Sequence::fromJson(juce::JSON::parse(captureSaved),captureReopened,error) && captureReopened.tracks[7].source["identity"].toString()=="display:test-monitor","Visual source assignment did not persist");
+        edit(d,"track.source",object({{"trackId",first},{"source",juce::var()}}));check(!d.sequence.tracks[7].monitoring,"Clearing visual source retained preview subscription");
+        d.undo.undo();check(d.sequence.tracks[7].monitoring && d.sequence.tracks[7].source["identity"].toString()=="display:test-monitor","Source undo lost assignment/preview state");d.undo.redo();
         for(const auto* type:{"video","audio","image","effects","automation"})
             edit(d,"track.create",object({{"type",type},{"name",type}}));
         const auto autoId=d.sequence.tracks.back().id;

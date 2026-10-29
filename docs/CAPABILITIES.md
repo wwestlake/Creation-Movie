@@ -1,5 +1,14 @@
 # Djehuti Movie capabilities
 
+## Capture Phase 2
+
+Existing video tracks can select an individual display or application window and
+show actual live capture in Source Monitor. Tracks selecting the same source
+share one physical Windows Graphics Capture acquisition. Assignment, preview
+state, clear and undo/redo use the existing document/persistence paths. Recording,
+camera/microphone and phone capture remain later phases. See
+[Capture Phase 2](CAPTURE_PHASE_2.md) for validation and platform/identity limits.
+
 ## Milestone 5 development status
 
 Native video/audio transitions, timeline editing, exact properties, persistence,

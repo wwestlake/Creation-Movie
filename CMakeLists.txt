@@ -8,6 +8,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(MSVC)
+    # The installed Windows SDK 19041 C++/WinRT projection uses the legacy
+    # coroutine header. Isolate its required language mode to this adapter;
+    # the Movie application and all other sources remain C++20.
+    set_source_files_properties(Source/MovieVisualCapture.cpp PROPERTIES COMPILE_OPTIONS "/std:c++17;/await")
     string(APPEND CMAKE_CXX_FLAGS_RELEASE " /Zi")
     string(APPEND CMAKE_EXE_LINKER_FLAGS_RELEASE " /DEBUG /OPT:REF /OPT:ICF")
     string(APPEND CMAKE_SHARED_LINKER_FLAGS_RELEASE " /DEBUG /OPT:REF /OPT:ICF")
@@ -119,6 +123,7 @@ target_sources(CreationMovieApp PRIVATE
     Source/EffectsPanel.inc
     Source/MovieDocument.cpp
     Source/MovieTracks.cpp
+    Source/MovieVisualCapture.cpp Source/MovieVisualCapture.h
     Source/MovieTransitions.cpp Source/MovieTransitions.h Source/TransitionPanel.inc Source/MovieTransitionCards.h
     Source/MovieAutomation.cpp Source/MovieAutomation.h
     Source/MovieEffects.cpp
@@ -164,6 +169,10 @@ target_link_libraries(CreationMovieApp PRIVATE
     juce::juce_recommended_warning_flags
 )
 
+if(WIN32)
+    target_link_libraries(CreationMovieApp PRIVATE windowsapp d3d11 dxgi dwmapi)
+endif()
+
 install(TARGETS CreationMovieApp
     RUNTIME DESTINATION .
     RESOURCE DESTINATION .
@@ -189,5 +198,12 @@ add_executable(MovieDocumentTests tests/MovieDocumentTests.cpp Source/MovieDocum
 target_include_directories(MovieDocumentTests PRIVATE Source)
 target_link_libraries(MovieDocumentTests PRIVATE creation_suite_timeline juce::juce_data_structures juce::juce_audio_basics juce::juce_gui_basics)
 target_compile_definitions(MovieDocumentTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+
+if(WIN32)
+    add_executable(MovieVisualCaptureTests tests/VisualCaptureTests.cpp Source/MovieVisualCapture.cpp)
+    target_include_directories(MovieVisualCaptureTests PRIVATE Source)
+    target_link_libraries(MovieVisualCaptureTests PRIVATE juce::juce_gui_basics windowsapp d3d11 dxgi dwmapi)
+    target_compile_definitions(MovieVisualCaptureTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+endif()
 enable_testing()
 add_test(NAME movie_document_tracks COMMAND MovieDocumentTests)

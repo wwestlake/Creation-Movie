@@ -1,5 +1,24 @@
 # Djehuti Movie implementation handoff
 
+## October 28 - Multisource Capture Phase 2: ready for review
+
+Implementation and validation are complete on `feat/movie-screen-window-capture`,
+from master `8c8ac14`. See [the full report](docs/CAPTURE_PHASE_2.md) and approved
+[Phase 1 contract](docs/CAPTURE_PHASE_1.md). Individual displays and windows now
+have real live Source Monitor previews, track-owned assignments and shared
+physical acquisition. No recording, camera/microphone or phone capture is added.
+
+Single-worker Debug builds and document tests passed. Native capture passed on
+all three displays and a changing window, including shared subscriptions and
+window closure. Mounted Movie capture checks and all 18 existing editing/export
+regression groups passed. Evidence paths and platform limits are in the report.
+Interface events were synthesized; native pointer input remains untested.
+Window assignments require explicit reselection after application restart.
+
+Submit through a Movie PR to master. Keep the development branch until merged;
+update the umbrella gitlink through its own PR after Movie integration. No Phase 3
+work is authorized. Existing source and shared libraries outside Movie unchanged.
+
 ## October 25 - Milestone 5: native transitions, ready for review
 
 Milestone 4 is merged through Movie PR #37 (`f456fa9`) and Suite PR #207.

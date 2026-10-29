@@ -4,12 +4,14 @@
 class MainComponent::TrackUiCheck final : private juce::Timer
 {
 public:
-    TrackUiCheck(MainComponent& component,juce::File destination,juce::File media,bool effects=false,bool automated=false,bool transitions=false):owner(component),output(std::move(destination)),inputVideo(std::move(media)),effectsMode(effects),automationMode(automated),transitionMode(transitions)
+    TrackUiCheck(MainComponent& component,juce::File destination,juce::File media,bool effects=false,bool automated=false,bool transitions=false,bool capture=false,juce::File fixture={}):owner(component),output(std::move(destination)),inputVideo(std::move(media)),effectsMode(effects),automationMode(automated),transitionMode(transitions),captureMode(capture),fixtureExecutable(std::move(fixture))
     {
         original=owner.session.getProjectId();output.createDirectory();startTimer(250);
     }
+    ~TrackUiCheck() override {if(captureFixture.isRunning())captureFixture.kill();}
 private:
     #include "TransitionUiCheck.inc"
+    #include "CaptureUiCheck.inc"
     void openCurve(const juce::String& track,const char* type,const char* parameter)
     {
         owner.selectTrack(track,false);owner.dock->activatePanel("effects");auto& panel=*owner.effectsPanel;
@@ -115,6 +117,7 @@ private:
     void timerCallback() override
     {
         if(owner.job->status=="running")return;
+        if(captureMode && owner.trackInspector && !owner.trackInspector->isEnabled())return;
         try
         {
             if(owner.job->status=="failed" && step!=90)throw std::runtime_error(owner.job->error.toStdString());
@@ -225,6 +228,7 @@ private:
                 case 17:
                     require(saved==juce::JSON::toString(owner.document.sequence.toJson()),"GUI edits did not survive save/reopen");
                     require(owner.document.sequence.findTrack(video)==1,"Stable identity lost on reopen");passed("GUI-edited multitrack project saves and reopens identically");
+                    if(captureMode){step=200;break;}
                     if(effectsMode){owner.selectTrack(video);owner.dock->activatePanel("effects");insertEffect("video.colour");step=30;}
                     else{record();owner.runUi("movie.project.open",movie::object({{"projectId",original},{"discardChanges",true}}));step=90;}break;
                 case 30:parameter("brightness",.45);parameter("contrast",1.3);parameter("blue",.6);insertEffect("video.opacity");break;
@@ -302,7 +306,7 @@ private:
                     require(owner.playback.position()>0 && owner.playback.error().isEmpty(),"Automated playback restart failed");owner.playback.play(false);
                     passed("Automation survives VFS reopen, exports processed FFV1/MP4 and plays/restarts through the existing transport");if(transitionMode){step=100;break;}record();owner.runUi("movie.project.open",movie::object({{"projectId",original},{"discardChanges",true}}));step=90;break;
                 case 90:stopTimer();owner.requestQuit();break;
-                default:if(transitionMode && step>=101 && step<=130)transitionStep(step-1);break;
+                default:if(captureMode && step>=201 && step<=230)captureStep(step-1);else if(transitionMode && step>=101 && step<=130)transitionStep(step-1);break;
             }
         }
         catch(const std::exception& e)
@@ -313,5 +317,6 @@ private:
         }
     }
     MainComponent& owner;juce::File output,inputVideo;juce::String original,project,video,audio,image,saved,error;juce::Array<juce::var> checks;int step=0;bool effectsMode=false,automationMode=false,transitionMode=false;juce::StringArray transitionClips;juce::String dissolveId;juce::String automationLane;
+    bool captureMode=false;juce::File fixtureExecutable;juce::ChildProcess captureFixture;
 };
 #endif
