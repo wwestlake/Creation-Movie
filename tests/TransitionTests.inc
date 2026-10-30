@@ -8,7 +8,7 @@ static void runTransitionTests()
     edit(d,"place",object({{"assetId",media.id},{"trackId",owner},{"start",2},{"duration",2},{"sourceIn",1}}));const auto b=d.sequence.clips.back().id;
     const auto clips=juce::JSON::toString(d.sequence.toJson()["clips"]);
     const auto args=object({{"trackId",owner},{"outgoing",a},{"incoming",b},{"type","video.dissolve"},{"start",1.5},{"duration",1.0}});
-    edit(d,"transition.create",args);const auto id=d.sequence.transitions[0].id;
+    edit(d,"transition.create",args);check(d.sequence.transitions.size()==1,"Created transition was lost during document validation");const auto id=d.sequence.transitions[0].id;
     check(clips==juce::JSON::toString(d.sequence.toJson()["clips"]),"Transition changed clip timing/source ranges");
     juce::Image red(juce::Image::ARGB,16,16,true),blue(juce::Image::ARGB,16,16,true);red.clear(red.getBounds(),juce::Colours::red);blue.clear(blue.getBounds(),juce::Colours::blue);
     auto tr=d.sequence.transitions[0];auto middle=blendTransition(tr,2,red,blue).getPixelAt(8,8);check(middle.getRed()==128 && middle.getBlue()==128,"Dissolve midpoint pixels incorrect");
@@ -49,6 +49,6 @@ static void runTransitionTests()
     Document edges;edges.sequence=d.sequence;edges.sequence.transitions.clear();edges.sequence.clips[(size_t)edges.sequence.findClip(b)].sourceStartSeconds=2;
     auto edgeArgs=args.clone();edgeArgs.getDynamicObject()->setProperty("start",0.0);edgeArgs.getDynamicObject()->setProperty("duration",4.0);edit(edges,"transition.create",edgeArgs);
     check(edges.sequence.transitions[0].active(0) && !edges.sequence.transitions[0].active(edges.sequence.duration()),"Sequence-boundary transition ownership incorrect");
-    auto old=d.sequence.toJson();old.getDynamicObject()->setProperty("version",4);old.getDynamicObject()->removeProperty("transitions");check(Sequence::fromJson(old,restored,error) && restored.transitions.empty(),"Version-4 transition migration failed");
+    auto old=d.sequence.toJson();old.getDynamicObject()->setProperty("version",4);old.getDynamicObject()->removeProperty("transitions");for(auto& clip:*old["clips"].getArray()){clip.getDynamicObject()->removeProperty("startSeconds");clip.getDynamicObject()->removeProperty("durationSeconds");}check(Sequence::fromJson(old,restored,error) && restored.transitions.empty(),"Version-4 transition migration failed");
     std::cout<<"PASS: transition types/pixels/softness/curves, audio gains/sample continuity, handles, overlap rejection, timing preservation, precise edits, identity, undo/cascade and version-4/5 persistence\n";
 }

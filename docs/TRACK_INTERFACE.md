@@ -19,7 +19,7 @@ undoable `movie.track.*` commands.
 - The green/grey header indicator toggles Enabled. Disabled tracks and clips are
   visibly dimmed and retain the existing preview/export enable semantics.
 - Arm/Mon preferences are shown on audio/video headers of at least 64 pixels.
-  Arm remains an inactive recording preference. Display/window sources have a
+  Arm selects a track for the next recording session. Display/window sources have a
   functional Live capture preview toggle; cameras reuse it. Microphones have an
   independent Listen checkbox and live input levels; system-audio monitoring is inactive.
 - Remove Track is available above the timeline, in the inspector and in the
@@ -58,8 +58,8 @@ off. Use headphones before enabling the Listen checkbox. Multiple tracks share
 one compatible device acquisition; incompatible requested formats report a
 conflict. System audio remains **saved configuration only**. See
 [Capture Phase 3](CAPTURE_PHASE_3.md) for format, validation and hardware limits.
-Neither source assignment nor clearing changes existing clips; recording remains
-inactive. See [Capture Phase 2](CAPTURE_PHASE_2.md).
+Neither source assignment nor clearing changes existing clips. Recording uses
+these assignments; see [Capture Phase 4](CAPTURE_PHASE_4.md).
 
 Effects tracks explain that their routing is undefined; ordinary audio, video
 and image tracks have functional effects through the docked [Effects browser](EFFECTS.md).

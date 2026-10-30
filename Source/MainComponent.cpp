@@ -1,4 +1,7 @@
 #include "MainComponent.h"
+#if JUCE_DEBUG
+#include "MovieRecordingWriter.h"
+#endif
 #include "Branding.h"
 #include "Legal/EulaText.h"
 #include <creation/assets/ProjectAssetService.h>
@@ -547,12 +550,13 @@ MainComponent::MainComponent()
     header.setLogoImage(creation::ui::getSuiteLogoImage(creation::ui::SuiteLogoId::movie));
     header.setSelectedLogoId(creation::ui::SuiteLogoId::movie);
     header.setSeparatePauseButtonVisible(true);
-    header.setTransportButtonVisible(CreationSuiteHeaderBar::TransportButtonSlot::record, false);
+    header.setTransportButtonVisible(CreationSuiteHeaderBar::TransportButtonSlot::record, true);
     header.setTransportButtonVisible(CreationSuiteHeaderBar::TransportButtonSlot::click, false);
     header.setTransportButtonVisible(CreationSuiteHeaderBar::TransportButtonSlot::loop, false);
     header.onPlay = [this] { runUi("movie.transport.play"); };
     header.onPause = [this] { runUi("movie.transport.pause"); };
-    header.onStop = [this] { runUi("movie.transport.stop"); };
+    header.onRecord = [this] { runUi("movie.recording.start"); };
+    header.onStop = [this] { runUi(recording.active()?"movie.recording.stop":"movie.transport.stop"); };
     header.onRewind = [this] { runUi("movie.transport.step", movie::object({ { "frames", -1 } })); };
     header.onFastForward = [this] { runUi("movie.transport.step", movie::object({ { "frames", 1 } })); };
     header.onRewindToStart = [this] { runUi("movie.transport.seek", movie::object({ { "time", 0.0 } })); };
@@ -699,6 +703,9 @@ MainComponent::MainComponent()
     if(testArgument>=0 && testArgument+1<arguments.size())
         trackUiCheck=std::make_unique<TrackUiCheck>(*this,juce::File(arguments[testArgument+1].unquoted()),
             testArgument+2<arguments.size()?juce::File(arguments[testArgument+2].unquoted()):juce::File(),arguments.contains("--effects-ui-check") || arguments.contains("--automation-ui-check") || arguments.contains("--transitions-ui-check"),arguments.contains("--automation-ui-check") || arguments.contains("--transitions-ui-check"),arguments.contains("--transitions-ui-check"));
+    const int recordingArgument=arguments.indexOf("--recording-ui-check");
+    if(recordingArgument>=0 && recordingArgument+3<arguments.size())
+        trackUiCheck=std::make_unique<TrackUiCheck>(*this,juce::File(arguments[recordingArgument+1].unquoted()),juce::File(arguments[recordingArgument+2].unquoted()),false,false,false,false,juce::File(arguments[recordingArgument+3].unquoted()),false,true);
     const int deviceArgument=arguments.indexOf("--device-ui-check");
     if(deviceArgument>=0 && deviceArgument+2<arguments.size())
         trackUiCheck=std::make_unique<TrackUiCheck>(*this,juce::File(arguments[deviceArgument+1].unquoted()),juce::File(arguments[deviceArgument+2].unquoted()),false,false,false,false,juce::File(),true);
@@ -786,6 +793,7 @@ bool MainComponent::keyPressed(const juce::KeyPress& key)
 
 void MainComponent::requestQuit()
 {
+    if(recording.active()){quitAfterRecording=true;recording.stop();warn("Finalizing recordings before closing Movie.");return;}
     if (job && job->status == "running")
     {
         warn("A background job is still running. Wait for completion, or cancel it before closing.");
@@ -900,6 +908,16 @@ MainComponent::Result MainComponent::execute(const juce::String& name, const juc
         return Result::success(state());
     if (name == "movie.jobs.get")
         return Result::success(jobs());
+    if(name=="movie.recording.readiness")return Result::success(recording.readiness(document.sequence));
+    if(name=="movie.recording.status" || name=="movie.recording.results")return Result::success(recording.status());
+    if(name=="movie.recording.start")
+    {if(job->status=="running")return Result::failure("job_busy","Wait for the project/media job before recording.");const auto error=recording.start(document.sequence,a.getProperty("position",playback.position()));if(error.isNotEmpty())return Result::failure("recording_rejected",error);return Result::success(recording.status());}
+    if(name=="movie.recording.stop"){recording.stop();return Result::success(recording.status());}
+    if(name=="movie.recording.recover")
+    {
+        if(recording.active())return Result::failure("recording_active","Stop the current take before recovery.");const auto id=a["takeId"].toString();if(id.length()<16 || !id.containsOnly("abcdefABCDEF0123456789-"))return Result::failure("invalid_take","Supply a valid take ID.");const auto target=session;
+        return startJob("recover-recording",[target,id](Job&)->juce::var{juce::MemoryBlock data;if(!target.readEntry("Project/Capture/"+id+".json",data))throw std::runtime_error("Take journal is unavailable.");return juce::JSON::parse(data.toString());},[this](const juce::var& result){publishRecording(result);});
+    }
     if(name=="movie.capture.sources"){juce::Array<juce::var> list;for(const auto& source:visualCapture.sources())list.add(source.toJson());return Result::success(list);}
     if(name=="movie.capture.status")return Result::success(visualCapture.status());
     if(name=="movie.transition.catalog")return Result::success(movie::transitionCatalog());
@@ -946,6 +964,7 @@ MainComponent::Result MainComponent::execute(const juce::String& name, const juc
     const bool transport = name.startsWith("movie.transport.") || name == "movie.select";
     if (job && job->status == "running" && ! transport)
         return Result::failure("job_busy", "Wait for the background job to finish or cancel it. Transport and state inspection remain available.");
+    if((name=="movie.project.new" || name=="movie.project.open") && recording.active())return Result::failure("recording_active","Stop and finalize recording before changing projects.");
     if ((name == "movie.project.new" || name == "movie.project.open") && document.dirty
         && ! static_cast<bool>(a.getProperty("discardChanges", false)))
         return Result::failure("unsaved_changes", "Save the current project first, or explicitly set discardChanges to true.");
@@ -1315,8 +1334,12 @@ void MainComponent::registerCommands()
     reg("movie.jobs.get", "Get Background Jobs", "Returns the current or most recent background media job status.",
         Effect::read, schemaObj({}));
     reg("movie.track.list", "List Tracks", "Returns tracks in display order.", Effect::read, schemaObj({}));
+    for(const auto* action:{"readiness","status","results","start","stop","recover"})
+        reg("movie.recording."+juce::String(action),"Recording "+juce::String(action),"Coordinated track-owned recording. Start/stop return immediately; poll status until finalized. Recovery republishes retained finalized assets idempotently.",
+            juce::String(action)=="start" || juce::String(action)=="stop" || juce::String(action)=="recover"?Effect::write:Effect::read,
+            schemaObj({{"position",movie::object({{"type","number"}})},{"takeId",movie::object({{"type","string"}})}}));
     reg("movie.capture.sources","Capture Sources","Current display/window/camera/microphone catalog with supported device formats. Assign a returned ID through movie.track.source on an existing compatible video/audio track.",Effect::read,schemaObj({}));
-    reg("movie.capture.status","Capture Preview Status","Shared acquisition state, subscribers, active formats, frame/sample activity, source-clock timestamps and errors. No recording.",Effect::read,schemaObj({}));
+    reg("movie.capture.status","Capture Preview Status","Shared acquisition state, subscribers, active formats, frame/sample activity, source-clock timestamps and errors. Use movie.recording.status for recording sessions.",Effect::read,schemaObj({}));
     reg("movie.transition.catalog","Transition Catalog","Available transition types, defaults, units and ranges.",Effect::read,schemaObj({}));
     reg("movie.transition.list","List Transitions","All saved transition definitions.",Effect::read,schemaObj({}));
     auto transitionSchema=schemaObj({{"transitionId",movie::object({{"type","string"}})},{"trackId",movie::object({{"type","string"}})},
@@ -1350,7 +1373,7 @@ void MainComponent::registerCommands()
     });
     for(const auto* operation:{"create","remove","rename","reorder","type","enabled","source","preferences","automation"})
         reg("movie.track."+juce::String(operation),"Track "+juce::String(operation),
-            "Undoable track document operation. Sources and recording preferences configure the document only. See docs/TRACK_DOCUMENT.md.",
+            "Undoable track document operation. Track arming controls recording participation; monitoring remains independent. See docs/TRACK_DOCUMENT.md.",
             juce::String(operation)=="remove"?Effect::destructive:Effect::write,trackSchema);
     reg("movie.app.close", "Close Movie", "Closes Movie after saving dirty edits. Refuses while a job is active; a failed save keeps the app open and the document dirty.",
         Effect::external, schemaObj({}));
@@ -1807,7 +1830,7 @@ void MainComponent::warn(const juce::String& msg)
 
 void MainComponent::timerCallback()
 {
-    syncVisualCapture();
+    syncVisualCapture();pollRecording();
     const double pos = playback.position();
     if (std::abs(pos - lastPreviewTime) > 1e-4)
     {
@@ -1826,6 +1849,26 @@ void MainComponent::timerCallback()
         execute("movie.project.save", movie::object({}));
     }
     refresh();
+}
+
+void MainComponent::publishRecording(const juce::var& take)
+{
+    if(take["projectId"].toString()!=session.getProjectId())throw std::runtime_error("Recording belongs to another project; assets remain retained in its VFS take journal.");
+    juce::String error;if(!document.edit("recording.publish",take,error))throw std::runtime_error(error.toStdString());
+    lastStatus="Recording "+take["state"].toString()+". Media retained in the project; unavailable target bindings remain unplaced in Media Library.";
+    if(const auto* tracks=take["tracks"].getArray())for(const auto& track:*tracks)
+        if(track["error"].toString().isNotEmpty())lastStatus+=" "+track["trackId"].toString()+": "+track["error"].toString();
+}
+void MainComponent::pollRecording()
+{
+    const auto status=recording.status();const auto state=status["state"].toString();
+    if(state=="failed" && status["error"].toString().isNotEmpty())lastStatus="Recording failed: "+status["error"].toString();
+    if(recording.active())lastStatus="Recording: "+state+" / "+juce::String((double)status["elapsed"],1)+" s / "+status["error"].toString();
+    if((bool)status["pendingPublication"] && job->status!="running")
+    {
+        const auto results=recording.takeResults();try{publishRecording(results);execute("movie.project.save",movie::object({}));}catch(const std::exception& e){warn(e.what());}
+    }
+    if(quitAfterRecording && !recording.active() && job->status!="running"){quitAfterRecording=false;requestQuit();}
 }
 
 bool MainComponent::liveSourceSelected() const

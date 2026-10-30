@@ -1,6 +1,6 @@
 # Movie track document (Milestone 1)
 
-Schema `djehuti-movie-sequence`, version 5, keeps an ordered `tracks` array.
+Schema `djehuti-movie-sequence`, version 6, keeps an ordered `tracks` array.
 Milestone 3 adds persistent effects chains; version-3 documents remain readable
 with empty chains. See [Effects](EFFECTS.md) for the added model and commands.
 Array position is display/compositing order: later tracks paint over earlier
@@ -12,6 +12,10 @@ Milestone 5 adds a sequence-level `transitions` array with stable IDs and clip
 references. Versions 2-4 load with no transitions; malformed transition data is
 rejected atomically. Transition end is derived from start and duration rather
 than persisted redundantly. See [Transitions](TRANSITIONS.md).
+
+Phase 4 recording adds precise clip `startSeconds`/`durationSeconds` in schema 6.
+Versions 2–5 remain readable. Transitions load in versions 5 and 6. See
+[Capture Phase 4](CAPTURE_PHASE_4.md) for retained media, exact placement and undo.
 
 ## Reuse
 

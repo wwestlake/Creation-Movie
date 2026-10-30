@@ -1,6 +1,7 @@
 #pragma once
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <memory>
+#include "MovieCaptureStream.h"
 #include <vector>
 
 namespace movie
@@ -40,6 +41,7 @@ public:
     std::vector<VisualSource> sources() const;
     void refresh();
     void setBindings(std::vector<VisualBinding>);
+    void setRecordingSubscriptions(std::vector<RecordingSubscription>);
     VisualPreview preview(const juce::String& trackId) const;
     juce::var status() const;
     juce::String validate(const juce::String& id,const juce::String& kind,const juce::var& settings) const;

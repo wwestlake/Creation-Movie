@@ -2,6 +2,7 @@
 #include <JuceHeader.h>
 #include "MoviePlayback.h"
 #include "MovieVisualCapture.h"
+#include "MovieRecording.h"
 #include <creation/assets/ProjectSession.h>
 #include <creation/agent/AgentApi.h>
 #include <creation/agent/EngineerChat.h>
@@ -54,6 +55,9 @@ private:
     movie::Document document;
     movie::Playback playback,sourcePlayback;
     movie::VisualCapture visualCapture;
+    movie::RecordingCoordinator recording{visualCapture};
+    bool quitAfterRecording=false;
+    void pollRecording();void publishRecording(const juce::var&);
     bool liveSourceSelected() const;
     void syncVisualCapture();
     creation::assets::ProjectSession session;

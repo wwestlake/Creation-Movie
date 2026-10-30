@@ -92,6 +92,11 @@ public:
         if(stamp!=catalogStamp){catalogStamp=stamp;populateMedia();populateFormats();}
         const auto p=owner.visualCapture.preview(owner.selectedTrack);
         signal.setText((cat=="microphone"?"Input: "+p.state+" / "+juce::String(p.peak>0?20*std::log10(p.peak):-100,1)+" dBFS":"Video: "+p.state)+"\n"+p.message,juce::dontSendNotification);
+        const auto recording=owner.recording.status();if(const auto* states=recording["tracks"].getArray())for(const auto& state:*states)if(state["trackId"].toString()==owner.selectedTrack)
+            signal.setText(signal.getText()+"\nTake: "+recording["state"].toString()+" / "+state["state"].toString()+" "+state["message"].toString(),juce::dontSendNotification);
+        if(const auto* results=recording["results"]["tracks"].getArray())for(const auto& result:*results)
+            if(result["trackId"].toString()==owner.selectedTrack && result["error"].toString().isNotEmpty())signal.setText(signal.getText()+"\n"+result["error"].toString(),juce::dontSendNotification);
+        signal.setTooltip(signal.getText());
     }
 private:
     juce::String selectedCategory()const
@@ -121,7 +126,7 @@ private:
         media.setVisible(sources && (cat=="media" || visual));identity.setVisible(sources && live && !visual);
         if(sources && (cat=="media" || visual))row(media);
         if(sources && visual)row(rescan);
-        captureFormat.setVisible(device);signal.setVisible(device);if(device){row(captureFormat);row(signal,64);}
+        captureFormat.setVisible(device);signal.setVisible(visual);if(device)row(captureFormat);if(visual)row(signal,64);
         if(sources && live && !visual)row(identity);
         const bool videoSettings=live && !visual && t.type=="video",audioSettings=live && !visual && t.type=="audio";
         widthLabel.setVisible(valid && videoSettings);pixelsLabel.setVisible(valid && videoSettings);fpsLabel.setVisible(valid && videoSettings);rateLabel.setVisible(valid && audioSettings);channelsLabel.setVisible(valid && audioSettings);
@@ -130,7 +135,7 @@ private:
         if(videoSettings){row(widthLabel,18);row(width);row(pixelsLabel,18);row(pixels);row(fpsLabel,18);row(fps);}
         if(audioSettings){row(rateLabel,18);row(rate);row(channelsLabel,18);row(channels);}
         if(sources){row(applySource);row(clearSource);}
-        note.setText(device?"Select a supported device format, then Apply Source. Microphone levels run while the track is enabled. Listening is off for new assignments: use headphones to avoid speaker feedback. Shared tracks must request compatible formats. Recording is not active.":visual?"Apply a source to preview it in Source Monitor. Live preview starts on assignment; uncheck Live capture preview to stop. Tracks sharing a source use one acquisition. Window selections must be renewed after restarting Movie. Recording is not active.":live?"Configuration only. No live device discovery, capture or monitoring is active.":t.type=="effects"?"Effects-track routing is undefined. Use effects on a video, audio or image track.":"Source changes keep existing clips. Arm remains a saved preference only.",juce::dontSendNotification);
+        note.setText(device?"Select a supported device format, then Apply Source. Microphone levels run while the track is enabled. Listening is off for new assignments: use headphones to avoid speaker feedback. Shared tracks must request compatible formats. Armed tracks participate in coordinated recording.":visual?"Apply a source to preview it in Source Monitor. Live preview starts on assignment; uncheck Live capture preview to stop. Tracks sharing a source use one acquisition. Window selections must be renewed after restarting Movie. Armed tracks participate in coordinated recording.":live?"Configuration only. No live device discovery, capture or monitoring is active.":t.type=="effects"?"Effects-track routing is undefined. Use effects on a video, audio or image track.":"Source changes keep existing clips. Arm selects this track for coordinated recording.",juce::dontSendNotification);
         row(note,visual?130:68);automation.setVisible(t.type=="automation");if(t.type=="automation")row(automation,100);
         row(remove);form.setSize(w+20,std::max(y,view.getHeight()));
     }
@@ -217,7 +222,7 @@ private:
     juce::TextEditor name,identity,width,pixels,fps,rate,channels;
     juce::ComboBox type,height,category,media,captureFormat;
     juce::Label signal;juce::Array<juce::var> formats;
-    juce::ToggleButton enabled{"Enabled"},armed{"Arm preference (no recording)"},monitor{"Monitor preference (inactive)"};
+    juce::ToggleButton enabled{"Enabled"},armed{"Arm for recording"},monitor{"Monitor preference (inactive)"};
     juce::TextButton applySource{"Apply Source"},clearSource{"Clear Source"},remove{"Remove Track..."};
     juce::TextButton effects{"Effects Browser / Inspector..."};
     juce::TextButton rescan{"Refresh available sources"};

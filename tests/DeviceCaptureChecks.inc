@@ -30,9 +30,9 @@ static int deviceChecks(const juce::File& output)
             {
                 std::array<float,2048> left{},right{};float* channels[]={left.data(),right.data()};capture.renderAudio(channels,2,2048,48000);
                 require(std::all_of(left.begin(),left.end(),[](float v){return v==0;}),"Monitoring sounded while disabled");
+                const auto renderedBefore=(juce::int64)capture.status()["monitorRenderedFrames"];
                 capture.setBindings({{"a",source.id,true,format,true},{"b",source.id,true,format,false}});
-                juce::Thread::sleep(150);capture.renderAudio(channels,2,2048,48000);
-                require((juce::int64)capture.status()["monitorRenderedFrames"]>0,"No microphone monitor samples consumed");
+                require(waitFor([&]{left.fill(0);right.fill(0);capture.renderAudio(channels,2,2048,48000);return (juce::int64)capture.status()["monitorRenderedFrames"]>renderedBefore;},5000),"No microphone monitor samples consumed");
                 require(std::all_of(left.begin(),left.end(),[](float v){return std::isfinite(v);}),"Nonfinite microphone monitor audio");
                 checks.add(source.name+": native samples, timestamps and bounded monitor-buffer consumption passed; peak="+juce::String(capture.preview("a").peak,6));
                 capture.setBindings({{"b",source.id,true,format,false}});juce::Thread::sleep(100);left.fill(0);right.fill(0);capture.renderAudio(channels,2,2048,48000);
