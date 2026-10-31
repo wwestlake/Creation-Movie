@@ -918,6 +918,13 @@ MainComponent::Result MainComponent::execute(const juce::String& name, const juc
         if(recording.active())return Result::failure("recording_active","Stop the current take before recovery.");const auto id=a["takeId"].toString();if(id.length()<16 || !id.containsOnly("abcdefABCDEF0123456789-"))return Result::failure("invalid_take","Supply a valid take ID.");const auto target=session;
         return startJob("recover-recording",[target,id](Job&)->juce::var{juce::MemoryBlock data;if(!target.readEntry("Project/Capture/"+id+".json",data))throw std::runtime_error("Take journal is unavailable.");return juce::JSON::parse(data.toString());},[this](const juce::var& result){publishRecording(result);});
     }
+    if(name=="movie.webcam.status")return Result::success(visualCapture.webcamStatus());
+    if(name=="movie.webcam.stop"){visualCapture.stopWebcam();return Result::success(visualCapture.webcamStatus());}
+    if(name=="movie.webcam.invite"){
+        if(recording.active())return Result::failure("recording_active","Stop recording before replacing the WebCam connection.");
+        try{return Result::success(visualCapture.webcamInvite(a["address"].toString(),(int)a.getProperty("port",8765)));}
+        catch(const std::exception& e){return Result::failure("webcam_pairing",e.what());}
+    }
     if(name=="movie.capture.sources"){juce::Array<juce::var> list;for(const auto& source:visualCapture.sources())list.add(source.toJson());return Result::success(list);}
     if(name=="movie.capture.status")return Result::success(visualCapture.status());
     if(name=="movie.transition.catalog")return Result::success(movie::transitionCatalog());
@@ -1339,6 +1346,9 @@ void MainComponent::registerCommands()
             juce::String(action)=="start" || juce::String(action)=="stop" || juce::String(action)=="recover"?Effect::write:Effect::read,
             schemaObj({{"position",movie::object({{"type","number"}})},{"takeId",movie::object({{"type","string"}})}}));
     reg("movie.capture.sources","Capture Sources","Current display/window/camera/microphone catalog with supported device formats. Assign a returned ID through movie.track.source on an existing compatible video/audio track.",Effect::read,schemaObj({}));
+    reg("movie.webcam.invite","Pair Djehuti WebCam","Start the selected private LAN listener and return a private one-use invitation (120 seconds). Keep the invitation out of logs and project data.",Effect::external,schemaObj({{"address",movie::object({{"type","string"}})},{"port",movie::object({{"type","integer"}})}}));
+    reg("movie.webcam.stop","Disconnect WebCam","Revoke invitation and release remote transport. Active remote recordings retain their usable prefix.",Effect::write,schemaObj({}));
+    reg("movie.webcam.status","WebCam Status","Connection, timing readiness and receive activity; never returns invitation credentials.",Effect::read,schemaObj({}));
     reg("movie.capture.status","Capture Preview Status","Shared acquisition state, subscribers, active formats, frame/sample activity, source-clock timestamps and errors. Use movie.recording.status for recording sessions.",Effect::read,schemaObj({}));
     reg("movie.transition.catalog","Transition Catalog","Available transition types, defaults, units and ranges.",Effect::read,schemaObj({}));
     reg("movie.transition.list","List Transitions","All saved transition definitions.",Effect::read,schemaObj({}));
