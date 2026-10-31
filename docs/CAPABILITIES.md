@@ -1,10 +1,21 @@
 # Djehuti Movie capabilities
 
-## Capture Phase 4 (ready for review)
+## WebCam Order 3 (implementation ready for physical testing)
+
+The existing Android Remote project is repurposed as Djehuti WebCam. Movie has an
+authenticated private-IPv4 WebRTC receiver for VP8 video and Opus audio, exposed
+as ordinary camera/microphone sources with preview, input levels/listening and
+shared recording subscriptions. Synthetic native and actual-Movie VFS recording,
+undo/redo and save/reopen checks pass. Galaxy S23 Ultra operation, physical sync,
+sustained drift and interruption acceptance remain unverified. See
+[WebCam Order 3](WEBCAM_ORDER_3.md) and [timing contract](WEBCAM_TIMING_CONTRACT.md).
+The implementation is under PR review; no merge, deployment or release is implied.
+
+## Capture Phase 4 (merged)
 
 Track-owned synchronized recording and incremental VFS persistence are implemented
-on the Phase 4 branch. Focused and broader validation pass; integration awaits
-review and the VFS dependency. See
+in merged Phase 4, including its VFS dependency. Focused and broader validation
+passed. See
 [Capture Phase 4](CAPTURE_PHASE_4.md) for architecture, evidence and limitations.
 Phone capture remains outside this phase.
 

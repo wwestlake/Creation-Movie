@@ -62,7 +62,7 @@ class Invitation:
         return dict(session=self.session, nonce=b64(nonce), ciphertext=b64(payload))
 
 
-def create_app(invitation, origin):
+def create_app(invitation, origin, results=None):
     app = web.Application(client_max_size=128 * 1024)
     peers = set()
     totals = dict(videoFrames=0, audioFrames=0, audioSamples=0, connections=0)
@@ -74,6 +74,8 @@ def create_app(invitation, origin):
                 totals[track.kind + "Frames"] += 1
                 if track.kind == "audio":
                     totals["audioSamples"] += frame.samples
+                if results and (totals[track.kind + "Frames"] % 30 == 0):
+                    results.write_text(json.dumps(totals), encoding="utf-8")
         except Exception:
             # End-of-stream is expected when the bounded test closes its peer.
             pass
@@ -146,9 +148,15 @@ if __name__ == "__main__":
     parser.add_argument("--origin", default="https://lagdaemon.com")
     parser.add_argument("--invitation", type=Path, required=True, help="Private local test file; never commit")
     parser.add_argument("--lifetime", type=int, default=120)
+    parser.add_argument("--results", type=Path, help="Explicit private development results file (counts only)")
+    parser.add_argument("--qr", type=Path, help="Private invitation QR SVG; explicitly requested test output only")
     args = parser.parse_args()
     invitation = Invitation(args.lifetime)
     args.invitation.write_text(json.dumps(dict(protocol=PROTOCOL, session=invitation.session,
         secret=b64(invitation.secret), endpoint=f"ws://{args.bind}:{args.port}/signal")), encoding="utf-8")
+    if args.qr:
+        import qrcode
+        import qrcode.image.svg
+        qrcode.make(args.invitation.read_text(encoding="utf-8"), image_factory=qrcode.image.svg.SvgPathImage).save(args.qr)
     print("Feasibility endpoint ready; invitation written locally. No media files are saved.", flush=True)
-    web.run_app(create_app(invitation, args.origin), host=args.bind, port=args.port, access_log=None)
+    web.run_app(create_app(invitation, args.origin, args.results), host=args.bind, port=args.port, access_log=None)

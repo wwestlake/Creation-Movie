@@ -25,6 +25,7 @@ endif()
 include(cmake/CreationSharedLLVM.cmake)
 configure_creation_shared_llvm(CM "Djehuti Movie")
 include(cmake/MovieFFmpeg.cmake)
+include(cmake/MovieWebCam.cmake)
 
 set(CREATION_SUITE_SHARED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../shared" CACHE PATH "Path to the Creation Suite shared code root")
 
@@ -133,6 +134,7 @@ target_sources(CreationMovieApp PRIVATE
     Source/MovieMedia.cpp
     Source/MovieMedia.h
     Source/MoviePlayback.cpp
+    Source/MovieWebCam.cpp
     Source/MoviePlayback.h
     Source/MovieExport.cpp
     Source/Legal/EulaText.cpp
@@ -158,6 +160,8 @@ target_link_libraries(CreationMovieApp PRIVATE
     ${CM_UI_TARGET}
     ${CM_INTEROP_TARGET}
     movie_ffmpeg
+    datachannel-static
+    OpenSSL::Crypto
     creation_movie_language_host
     node_system
     CreationDock
@@ -201,12 +205,27 @@ target_link_libraries(MovieDocumentTests PRIVATE creation_suite_timeline juce::j
 target_compile_definitions(MovieDocumentTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 
 if(WIN32)
-    add_executable(MovieVisualCaptureTests tests/VisualCaptureTests.cpp Source/MovieVisualCapture.cpp Source/MovieDeviceCapture.cpp)
+    add_executable(MovieVisualCaptureTests tests/VisualCaptureTests.cpp Source/MovieVisualCapture.cpp Source/MovieDeviceCapture.cpp Source/MovieWebCam.cpp)
     target_include_directories(MovieVisualCaptureTests PRIVATE Source)
-    target_link_libraries(MovieVisualCaptureTests PRIVATE juce::juce_gui_basics windowsapp d3d11 dxgi dwmapi mfplat mfreadwrite mfuuid mf ole32 propsys)
+    target_link_libraries(MovieVisualCaptureTests PRIVATE movie_ffmpeg datachannel-static OpenSSL::Crypto juce::juce_gui_basics windowsapp d3d11 dxgi dwmapi mfplat mfreadwrite mfuuid mf ole32 propsys)
+    movie_copy_ffmpeg(MovieVisualCaptureTests)
     target_compile_definitions(MovieVisualCaptureTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 endif()
 enable_testing()
+add_executable(WebCamReceiverTests tests/WebCamReceiverTests.cpp Source/MovieWebCam.cpp)
+target_include_directories(WebCamReceiverTests PRIVATE Source)
+target_link_libraries(WebCamReceiverTests PRIVATE movie_ffmpeg datachannel-static OpenSSL::Crypto juce::juce_gui_basics)
+target_compile_definitions(WebCamReceiverTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+# Keep test hooks on these two sources; do not rebuild JUCE modules for a test-only define.
+set_property(SOURCE Source/MovieWebCam.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+    "$<$<STREQUAL:$<TARGET_PROPERTY:NAME>,WebCamReceiverTests>:MOVIE_WEBCAM_TESTS=1>")
+set_property(SOURCE tests/WebCamReceiverTests.cpp APPEND PROPERTY COMPILE_DEFINITIONS MOVIE_WEBCAM_TESTS=1)
+movie_copy_ffmpeg(WebCamReceiverTests)
+movie_copy_webcam_runtime(WebCamReceiverTests)
+movie_copy_webcam_runtime(CreationMovieApp)
+if(TARGET MovieVisualCaptureTests)
+    movie_copy_webcam_runtime(MovieVisualCaptureTests)
+endif()
 add_test(NAME movie_document_tracks COMMAND MovieDocumentTests)
 
 # Optional local integration validation, using the canonical Movie build tree.

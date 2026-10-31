@@ -40,6 +40,9 @@ public:
     ~VisualCapture();
     std::vector<VisualSource> sources() const;
     void refresh();
+    juce::var webcamInvite(const juce::String& address,int port);
+    void stopWebcam();
+    juce::var webcamStatus() const;
     void setBindings(std::vector<VisualBinding>);
     void setRecordingSubscriptions(std::vector<RecordingSubscription>);
     VisualPreview preview(const juce::String& trackId) const;

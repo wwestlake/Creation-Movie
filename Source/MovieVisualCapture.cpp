@@ -1,5 +1,6 @@
 #include "MovieVisualCapture.h"
 #include "MovieDeviceCapture.h"
+#include "MovieWebCam.h"
 #include <atomic>
 #include <map>
 #include <mutex>
@@ -29,6 +30,7 @@ juce::var VisualSource::toJson() const
 struct VisualCapture::Impl
 {
     DeviceCapture devices;
+    WebCamCapture webcam;
     mutable std::mutex mutex;
     std::vector<VisualSource> catalog;
     std::vector<VisualBinding> bindings;
@@ -217,9 +219,9 @@ struct VisualCapture::Impl
 };
 VisualCapture::VisualCapture():impl(std::make_unique<Impl>()){}
 VisualCapture::~VisualCapture()=default;
-std::vector<VisualSource> VisualCapture::sources() const {std::lock_guard lock(impl->mutex);auto result=impl->catalog;const auto devices=impl->devices.sources();result.insert(result.end(),devices.begin(),devices.end());return result;}
+std::vector<VisualSource> VisualCapture::sources() const {std::lock_guard lock(impl->mutex);auto result=impl->catalog;const auto devices=impl->devices.sources();result.insert(result.end(),devices.begin(),devices.end());const auto remote=impl->webcam.sources();result.insert(result.end(),remote.begin(),remote.end());return result;}
 void VisualCapture::refresh(){impl->rescan=true;impl->devices.refresh();}
-void VisualCapture::setBindings(std::vector<VisualBinding> bindings){std::lock_guard lock(impl->mutex);std::vector<VisualBinding> devices;for(const auto& b:bindings)if(b.sourceId.startsWith("camera:") || b.sourceId.startsWith("microphone:"))devices.push_back(b);for(const auto& r:impl->recordings)if(r.sourceId.startsWith("camera:") || r.sourceId.startsWith("microphone:"))devices.push_back({"record:"+r.trackId,r.sourceId,true,r.settings,false});impl->devices.setBindings(std::move(devices));impl->bindings=std::move(bindings);}
+void VisualCapture::setBindings(std::vector<VisualBinding> bindings){std::lock_guard lock(impl->mutex);std::vector<VisualBinding> devices;for(const auto& b:bindings)if(b.sourceId.startsWith("camera:") || b.sourceId.startsWith("microphone:"))devices.push_back(b);for(const auto& r:impl->recordings)if(r.sourceId.startsWith("camera:") || r.sourceId.startsWith("microphone:"))devices.push_back({"record:"+r.trackId,r.sourceId,true,r.settings,false});impl->devices.setBindings(std::move(devices));impl->bindings=std::move(bindings);impl->webcam.setBindings(impl->bindings,impl->recordings);}
 void VisualCapture::setRecordingSubscriptions(std::vector<RecordingSubscription> recordings)
 {
     std::lock_guard lock(impl->mutex);impl->recordings=std::move(recordings);std::vector<VisualBinding> bindings;
@@ -227,10 +229,13 @@ void VisualCapture::setRecordingSubscriptions(std::vector<RecordingSubscription>
     std::vector<RecordingSubscription> devices;
     for(const auto& r:impl->recordings)if(r.sourceId.startsWith("camera:") || r.sourceId.startsWith("microphone:")){bindings.push_back({"record:"+r.trackId,r.sourceId,true,r.settings,false});devices.push_back(r);}
     impl->devices.setRecordingSubscriptions(std::move(devices));impl->devices.setBindings(std::move(bindings));
+    impl->webcam.setBindings(impl->bindings,impl->recordings);
 }
 VisualPreview VisualCapture::preview(const juce::String& track) const
 {
     std::lock_guard lock(impl->mutex);VisualPreview result;
+    for(const auto& r:impl->recordings)if(track=="record:"+r.trackId&&r.sourceId.startsWith("webcam:"))return impl->webcam.preview(r.sourceId);
+    for(const auto& b:impl->bindings)if(b.trackId==track&&b.sourceId.startsWith("webcam:")){if(!b.active)return result;return impl->webcam.preview(b.sourceId);}
     for(const auto& r:impl->recordings)if(track=="record:"+r.trackId){if(r.sourceId.startsWith("camera:") || r.sourceId.startsWith("microphone:"))return impl->devices.preview(track);if(impl->problem.isNotEmpty()){result.state="failed";result.message=impl->problem;return result;}auto it=impl->snapshots.find(r.sourceId);if(it!=impl->snapshots.end())return it->second;result.state="starting";return result;}
     for(const auto& b:impl->bindings)if(b.trackId==track && (b.sourceId.startsWith("camera:") || b.sourceId.startsWith("microphone:")))return impl->devices.preview(track);
     if(impl->problem.isNotEmpty()){result.state="failed";result.message=impl->problem;return result;}
@@ -248,7 +253,8 @@ juce::var VisualCapture::status() const
         o->setProperty("timestamp100ns",p.timestamp100ns);o->setProperty("width",p.image.getWidth());o->setProperty("height",p.image.getHeight());entries.add(juce::var(o));
     }
     const auto deviceStatus=impl->devices.status();if(const auto* list=deviceStatus["sources"].getArray())entries.addArray(*list);
-    auto* result=new juce::DynamicObject;result->setProperty("sources",entries);result->setProperty("activeAcquisitions",impl->activeAcquisitions+(int)deviceStatus["activeAcquisitions"]);result->setProperty("error",impl->problem+deviceStatus["error"].toString());result->setProperty("monitorDroppedFrames",deviceStatus["monitorDroppedFrames"]);result->setProperty("monitorRenderedFrames",deviceStatus["monitorRenderedFrames"]);result->setProperty("deviceDiscoveryComplete",deviceStatus["deviceDiscoveryComplete"]);return juce::var(result);
+    for(const auto& source:impl->webcam.sources()){const auto p=impl->webcam.preview(source.id);auto* row=new juce::DynamicObject;row->setProperty("sourceId",source.id);row->setProperty("state",p.state);row->setProperty("message",p.message);row->setProperty("frames",p.frameNumber);row->setProperty("samples",p.sampleCount);row->setProperty("timestamp100ns",p.timestamp100ns);row->setProperty("peak",p.peak);row->setProperty("discontinuities",p.discontinuities);entries.add(juce::var(row));}
+    auto* result=new juce::DynamicObject;result->setProperty("sources",entries);result->setProperty("activeAcquisitions",impl->activeAcquisitions+(int)deviceStatus["activeAcquisitions"]+(impl->webcam.status()["state"].toString()=="connected"?(int)impl->webcam.sources().size():0));result->setProperty("error",impl->problem+deviceStatus["error"].toString());result->setProperty("monitorDroppedFrames",deviceStatus["monitorDroppedFrames"]);result->setProperty("monitorRenderedFrames",deviceStatus["monitorRenderedFrames"]);result->setProperty("deviceDiscoveryComplete",deviceStatus["deviceDiscoveryComplete"]);return juce::var(result);
 }
 juce::String VisualCapture::validate(const juce::String& id,const juce::String& kind,const juce::var& settings)const
 {
@@ -261,6 +267,9 @@ juce::String VisualCapture::validate(const juce::String& id,const juce::String& 
     return "Source unavailable. Refresh sources; saved unavailable assignments are preserved.";
 }
 void VisualCapture::renderAudio(float*const* outputs,int channels,int frames,double rate)
-{impl->devices.renderAudio(outputs,channels,frames,rate);}
+{impl->devices.renderAudio(outputs,channels,frames,rate);impl->webcam.renderAudio(outputs,channels,frames,rate);}
+juce::var VisualCapture::webcamInvite(const juce::String& address,int port){return impl->webcam.invite(address,port);}
+void VisualCapture::stopWebcam(){impl->webcam.stop();}
+juce::var VisualCapture::webcamStatus()const{return impl->webcam.status();}
 
 }

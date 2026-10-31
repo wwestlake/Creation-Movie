@@ -8,7 +8,7 @@ public:
     {
         addAndMakeVisible(view);view.setViewedComponent(&form,false);view.setScrollBarsShown(true,false);
         for(auto* c:std::initializer_list<juce::Component*>{&heading,&nameLabel,&name,&typeLabel,&type,&enabled,&armed,&monitor,
-            &heightLabel,&height,&sourceLabel,&category,&media,&identity,&settingsLabel,&widthLabel,&pixelsLabel,&fpsLabel,&rateLabel,&channelsLabel,&width,&pixels,&fps,&rate,&channels,&applySource,&clearSource,&note,&automation,&remove,&effects,&rescan,&captureFormat,&signal})form.addAndMakeVisible(c);
+            &heightLabel,&height,&sourceLabel,&category,&media,&identity,&settingsLabel,&widthLabel,&pixelsLabel,&fpsLabel,&rateLabel,&channelsLabel,&width,&pixels,&fps,&rate,&channels,&applySource,&clearSource,&note,&automation,&remove,&effects,&rescan,&captureFormat,&signal,&pairWebcam})form.addAndMakeVisible(c);
         heading.setText("Track Inspector",juce::dontSendNotification);
         nameLabel.setText("Name",juce::dontSendNotification);typeLabel.setText("Type",juce::dontSendNotification);
         heightLabel.setText("Lane height",juce::dontSendNotification);sourceLabel.setText("Source",juce::dontSendNotification);
@@ -31,6 +31,19 @@ public:
         category.onChange=[this]{if(!syncing){populateMedia();layout();}};
         applySource.onClick=[this]{saveSource();};clearSource.onClick=[this]{mutate("source",movie::object({{"source",juce::var()}}));};
         rescan.onClick=[this]{owner.visualCapture.refresh();populateMedia();};
+        pairWebcam.onClick=[this]{
+            juce::Array<juce::IPAddress> addresses;juce::IPAddress::findAllAddresses(addresses,false);juce::PopupMenu menu;juce::StringArray choices;
+            for(const auto& ip:addresses){const auto text=ip.toString();if(text.startsWith("10.")||text.startsWith("192.168.")||(text.startsWith("172.")&&text.fromFirstOccurrenceOf(".",false,false).getIntValue()>=16&&text.fromFirstOccurrenceOf(".",false,false).getIntValue()<=31)){choices.add(text);menu.addItem(choices.size(),"Pair on "+text+" : 8765");}}
+            menu.addSeparator();menu.addItem(1000,"Disconnect WebCam / revoke invitation");const juce::Component::SafePointer<TrackInspector> safe(this);
+            menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&pairWebcam),[safe,choices](int selected){if(!safe||!selected)return;
+                if(selected==1000){safe->owner.runUi("movie.webcam.stop");return;}
+                if(!juce::isPositiveAndBelow(selected-1,choices.size()))return;
+                const auto result=safe->owner.execute("movie.webcam.invite",movie::object({{"address",choices[selected-1]},{"port",8765}}));
+                if(!result.ok){safe->owner.warn(result.message);return;}
+                juce::SystemClipboard::copyTextToClipboard(juce::JSON::toString(result.data,true));
+                juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,"Pair Djehuti WebCam","Private invitation copied. Transfer it privately to Djehuti WebCam on your phone, then Connect and stream. It expires in 120 seconds and can be used once. Refresh after connecting; select WebCam video under Camera or WebCam audio under Microphone.");
+            });
+        };
         remove.onClick=[this]{owner.removeTrack(owner.selectedTrack);};
         effects.onClick=[this]{if(owner.dock)owner.dock->activatePanel("effects");};
         note.setJustificationType(juce::Justification::topLeft);automation.setJustificationType(juce::Justification::topLeft);
@@ -107,7 +120,7 @@ private:
     {
         const int w=std::max(190,view.getMaximumVisibleWidth()-20);int y=8;
         auto row=[&](juce::Component& c,int h=26){c.setBounds(10,y,w,h);y+=h+5;};
-        row(heading,32);
+        row(heading,32);row(pairWebcam);
         for(auto* c:std::initializer_list<juce::Component*>{&nameLabel,&name,&typeLabel,&type,&enabled,&armed,&monitor,&heightLabel,&height,&sourceLabel,&category,&media,&identity,&settingsLabel,&widthLabel,&pixelsLabel,&fpsLabel,&rateLabel,&channelsLabel,&width,&pixels,&fps,&rate,&channels,&applySource,&clearSource,&note,&automation,&remove})c->setVisible(valid);
         effects.setVisible(valid);
         if(!valid){form.setSize(w+20,std::max(70,view.getHeight()));return;}
@@ -226,6 +239,7 @@ private:
     juce::TextButton applySource{"Apply Source"},clearSource{"Clear Source"},remove{"Remove Track..."};
     juce::TextButton effects{"Effects Browser / Inspector..."};
     juce::TextButton rescan{"Refresh available sources"};
+    juce::TextButton pairWebcam{"Pair / disconnect Djehuti WebCam..."};
     juce::String catalogStamp;
 };
 void MainComponent::selectTrack(const juce::String& id,bool showInspector)
