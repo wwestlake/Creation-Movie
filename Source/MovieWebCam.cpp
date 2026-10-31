@@ -183,7 +183,7 @@ struct WebCamCapture::Impl : std::enable_shared_from_this<WebCamCapture::Impl> {
                 }
             }
         }
-        
+
     }
     void packet(Packet& packet){
         auto& s=streams[packet.stream];const auto* p=packet.data.data();size_t n=packet.data.size();if(n<12||(p[0]>>6)!=2)return;
