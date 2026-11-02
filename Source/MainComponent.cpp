@@ -580,6 +580,9 @@ MainComponent::MainComponent()
     addAndMakeVisible(title);
     addAndMakeVisible(fit);
     addAndMakeVisible(pairPhone); pairPhone.onClick=[this]{showPhonePairing();};
+    addAndMakeVisible(phoneStatus);addAndMakeVisible(disconnectPhoneButton);
+    phoneStatus.setColour(juce::Label::textColourId,juce::Colours::white.withAlpha(0.85f));
+    disconnectPhoneButton.onClick=[this]{disconnectPhone();};
     addAndMakeVisible(cancelJob);
     addAndMakeVisible(zoom);
 
@@ -730,6 +733,7 @@ MainComponent::~MainComponent()
 #endif
     closing = true;
     stopTimer();
+    phonePairingWindow.reset();
     api.stop();
     engineer.cancel();
     if (job)
@@ -765,6 +769,9 @@ void MainComponent::resized()
     timecode.setBounds(topBar.removeFromLeft(130).reduced(4, 0));
     status.setBounds(topBar.reduced(6, 0));
 
+    auto phoneBar=area.removeFromBottom(28);
+    disconnectPhoneButton.setBounds(phoneBar.removeFromRight(150).reduced(2));
+    phoneStatus.setBounds(phoneBar.reduced(6,0));
     if (dock)
         dock->setBounds(area);
 }
@@ -1883,6 +1890,14 @@ void MainComponent::warn(const juce::String& msg)
 void MainComponent::timerCallback()
 {
     syncVisualCapture();pollRecording();
+    const auto connection=visualCapture.webcamStatus();const auto connectionState=connection["state"].toString();
+    const auto description=connectionState=="connected"?juce::String("Connected — ready for video/audio source assignment")
+        :connectionState=="pairing"?juce::String("Waiting for phone")
+        :connectionState=="negotiating"?juce::String("Connecting")
+        :connectionState=="stopped"?juce::String("Not connected")
+        :juce::String("Failed: ")+connection["error"].toString();
+    phoneStatus.setText("Phone: "+description,juce::dontSendNotification);phoneStatus.setTooltip(description);
+    disconnectPhoneButton.setEnabled(connectionState!="stopped"&&connectionState.isNotEmpty());
     const double pos = playback.position();
     if (std::abs(pos - lastPreviewTime) > 1e-4)
     {
@@ -2031,19 +2046,21 @@ void MainComponent::menuItemSelected(int id, int)
 
 void MainComponent::showPhonePairing()
 {
-    if(phonePairing){phonePairing->toFront(true);return;}
+    if(phonePairingWindow){phonePairingWindow->toFront(true);return;}
     const juce::Component::SafePointer<MainComponent> host(this);
-    auto* pairing=new MovieWebCamPairing([host]{
+    auto pairing=std::make_unique<MovieWebCamPairing>([host]{
         if(!host)throw std::runtime_error("Movie has closed.");
         const auto result=host->execute("movie.webcam.invite",movie::object({}));
         if(!result.ok)throw std::runtime_error(result.message.toStdString());
         return result.data;
     },[host]{return host?host->visualCapture.webcamStatus():juce::var();},
-    [host]{if(host)host->visualCapture.stopWebcam();});
-    phonePairing=pairing;
-    juce::DialogWindow::LaunchOptions options;
-    options.dialogTitle="Pair Phone";options.dialogBackgroundColour=juce::Colour(0xff263238);
-    options.content.setOwned(pairing);options.componentToCentreAround=this;
-    options.useNativeTitleBar=true;options.resizable=false;options.escapeKeyTriggersCloseButton=true;
-    options.launchAsync();
+    [host]{if(host)host->visualCapture.stopWebcam();},
+    [host]{if(host){host->phonePairingWindow.reset();if(!host->closing)host->getTopLevelComponent()->toFront(true);}});
+    phonePairingWindow=std::make_unique<MovieWebCamPairingWindow>(std::move(pairing),this);
+}
+
+void MainComponent::disconnectPhone()
+{
+    runUi("movie.webcam.stop");
+    if(phonePairingWindow)phonePairingWindow->closeButtonPressed();
 }

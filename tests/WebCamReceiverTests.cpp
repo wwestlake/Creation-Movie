@@ -2,6 +2,7 @@
 #include "MovieCaptureMonitor.h"
 #include "MovieWebCamNetwork.h"
 #include "MovieWebCamQr.h"
+#include "WebCamPairingLifecycleTests.h"
 #include <iostream>
 #include <thread>
 
@@ -11,6 +12,10 @@ int main(int argc,char** argv){
     {movie::CaptureMonitor monitor;monitor.enabled=true;monitor.write(1,-1);float left[4]{},right[4]{};float* outputs[]={left,right};monitor.render(outputs,2,4);if(left[0]!=.25f||right[0]!=-.25f)return 3;
      monitor.write(1,1);++monitor.generation;left[0]=right[0]=0;monitor.render(outputs,2,4);if(left[0]||right[0])return 3;
      monitor.write(1,1);monitor.enabled=false;monitor.render(outputs,2,4);if(left[0]||right[0])return 3;}
+    if(argc==2&&juce::String(argv[1])=="--lifecycle"){
+        try{verifyPairingLifecycle();std::cout<<"Pairing lifecycle checks passed: modeless workspace, waiting Close, successful auto-dismiss, reopen/Done without reconnect, failed Retry/Close, teardown and explicit disconnect\n";return 0;}
+        catch(const std::exception& error){std::cerr<<error.what()<<"\n";return 4;}
+    }
     if(argc==2&&juce::String(argv[1])=="--unit"){
         try{
             const auto candidates=movie::selectWebCamAddresses({
@@ -42,6 +47,11 @@ int main(int argc,char** argv){
         movie::WebCamCapture capture;
         const auto invitation=capture.invite(juce::String(argv[2])=="auto"?juce::String():juce::String::fromUTF8(argv[2]),8765);
         output.getChildFile("invitation.private.json").replaceWithText(juce::JSON::toString(invitation));
+        bool pairingAutoClosed=false;
+        std::unique_ptr<MovieWebCamPairingWindow> pairingWindow;
+        auto panel=std::make_unique<MovieWebCamPairing>([&]{return invitation;},[&]{return capture.status();},[&]{capture.stop();},[&]{pairingAutoClosed=true;pairingWindow.reset();});
+        pairingWindow=std::make_unique<MovieWebCamPairingWindow>(std::move(panel),nullptr,false);
+        if(pairingWindow->isCurrentlyModal())throw std::runtime_error("Live pairing window became modal");
         auto first=std::make_shared<movie::CaptureQueue>(),second=std::make_shared<movie::CaptureQueue>(),audio=std::make_shared<movie::CaptureQueue>();
         first->after=0;second->after=0;audio->after=0;
         capture.setBindings({{"monitor","webcam:audio",true,{},true}},{{"first","webcam:video",{},first},{"second","webcam:video",{},second},{"audio","webcam:audio",{},audio}});
@@ -59,8 +69,13 @@ int main(int argc,char** argv){
             if(v1>60&&a>100&&unsubscribed)break;
             if(output.getChildFile("stop").existsAsFile())break;
         }
+        const auto liveSources=capture.sources();
+        bool hasVideo=false,hasAudio=false;for(const auto& source:liveSources){hasVideo|=source.id=="webcam:video";hasAudio|=source.id=="webcam:audio";}
+        if(!pairingAutoClosed||pairingWindow||capture.status()["state"].toString()!="connected"||!hasVideo||!hasAudio)failure="Auto-dismiss lost connection or source catalog";
+        pairingWindow.reset();
         capture.stop();output.getChildFile("invitation.private.json").deleteFile();
+        if(capture.status()["state"].toString()!="stopped")failure="Explicit disconnect did not stop receiver";
         if(failure.isNotEmpty()||v1<=60||a<=100||!unsubscribed){std::cerr<<"Native receiver incomplete: video="<<v1<<" audio="<<a<<" "<<failure<<"\n";return 1;}
-        std::cout<<"Native receiver: authenticated decoded video/audio, monotonic mapped times, shared source and unsubscribe checks passed\n";return 0;
+        std::cout<<"Native receiver: authenticated decoded video/audio, monotonic mapped times, shared source, unsubscribe and live pairing auto-dismiss/source catalog checks passed\n";return 0;
     }catch(const std::exception& error){std::cerr<<error.what()<<"\n";return 1;}
 }
