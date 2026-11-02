@@ -19,6 +19,8 @@ public:
     bool keyPressed(const juce::KeyPress&)override;
     void requestQuit();
 private:
+    void showPhonePairing();
+    juce::Component::SafePointer<juce::Component> phonePairing;
     class Library;class Monitor;class Timeline;class Inspector;class TrackInspector;class EffectsPanel;class AutomationEditor;class TransitionPanel;
     struct Job
     {
@@ -69,7 +71,7 @@ private:
     juce::LookAndFeel_V4 look;
     juce::MenuBarComponent menu{this};
     juce::Label status,timecode;
-    juce::TextButton split{"Split"},title{"Title"},fit{"Fit timeline"},cancelJob{"Cancel job"};
+    juce::TextButton split{"Split"},title{"Title"},fit{"Fit timeline"},cancelJob{"Cancel job"},pairPhone{"Pair Phone"};
     juce::Slider zoom;
     std::unique_ptr<Library> library;std::unique_ptr<Monitor> monitor,sourceMonitor;
     std::unique_ptr<Timeline> timeline;std::unique_ptr<Inspector> inspector;

@@ -579,6 +579,7 @@ MainComponent::MainComponent()
     addAndMakeVisible(split);
     addAndMakeVisible(title);
     addAndMakeVisible(fit);
+    addAndMakeVisible(pairPhone); pairPhone.onClick=[this]{showPhonePairing();};
     addAndMakeVisible(cancelJob);
     addAndMakeVisible(zoom);
 
@@ -758,6 +759,7 @@ void MainComponent::resized()
     split.setBounds(topBar.removeFromLeft(66).reduced(2));
     title.setBounds(topBar.removeFromLeft(66).reduced(2));
     fit.setBounds(topBar.removeFromLeft(90).reduced(2));
+    pairPhone.setBounds(topBar.removeFromLeft(100).reduced(2));
     cancelJob.setBounds(topBar.removeFromLeft(86).reduced(2));
     zoom.setBounds(topBar.removeFromLeft(130).reduced(4));
     timecode.setBounds(topBar.removeFromLeft(130).reduced(4, 0));
@@ -1382,7 +1384,7 @@ void MainComponent::registerCommands()
             juce::String(action)=="start" || juce::String(action)=="stop" || juce::String(action)=="recover"?Effect::write:Effect::read,
             schemaObj({{"position",movie::object({{"type","number"}})},{"takeId",movie::object({{"type","string"}})}}));
     reg("movie.capture.sources","Capture Sources","Current display/window/camera/microphone catalog with supported device formats. Assign a returned ID through movie.track.source on an existing compatible video/audio track.",Effect::read,schemaObj({}));
-    reg("movie.webcam.invite","Pair Djehuti WebCam","Start the selected private LAN listener and return a private one-use invitation (120 seconds). Keep the invitation out of logs and project data.",Effect::external,schemaObj({{"address",movie::object({{"type","string"}})},{"port",movie::object({{"type","integer"}})}}));
+    reg("movie.webcam.invite","Pair Djehuti WebCam","Automatically discover active local networks and return a private one-use invitation (120 seconds). Address is an optional diagnostic override. Keep the invitation out of logs and project data.",Effect::external,schemaObj({{"address",movie::object({{"type","string"}})},{"port",movie::object({{"type","integer"}})}}));
     reg("movie.webcam.stop","Disconnect WebCam","Revoke invitation and release remote transport. Active remote recordings retain their usable prefix.",Effect::write,schemaObj({}));
     reg("movie.webcam.status","WebCam Status","Connection, timing readiness and receive activity; never returns invitation credentials.",Effect::read,schemaObj({}));
     reg("movie.capture.status","Capture Preview Status","Shared acquisition state, subscribers, active formats, frame/sample activity, source-clock timestamps and errors. Use movie.recording.status for recording sessions.",Effect::read,schemaObj({}));
@@ -2025,4 +2027,23 @@ void MainComponent::menuItemSelected(int id, int)
         case 40: showHelp(); break;
         default: break;
     }
+}
+
+void MainComponent::showPhonePairing()
+{
+    if(phonePairing){phonePairing->toFront(true);return;}
+    const juce::Component::SafePointer<MainComponent> host(this);
+    auto* pairing=new MovieWebCamPairing([host]{
+        if(!host)throw std::runtime_error("Movie has closed.");
+        const auto result=host->execute("movie.webcam.invite",movie::object({}));
+        if(!result.ok)throw std::runtime_error(result.message.toStdString());
+        return result.data;
+    },[host]{return host?host->visualCapture.webcamStatus():juce::var();},
+    [host]{if(host)host->visualCapture.stopWebcam();});
+    phonePairing=pairing;
+    juce::DialogWindow::LaunchOptions options;
+    options.dialogTitle="Pair Phone";options.dialogBackgroundColour=juce::Colour(0xff263238);
+    options.content.setOwned(pairing);options.componentToCentreAround=this;
+    options.useNativeTitleBar=true;options.resizable=false;options.escapeKeyTriggersCloseButton=true;
+    options.launchAsync();
 }

@@ -31,33 +31,7 @@ public:
         category.onChange=[this]{if(!syncing){populateMedia();layout();}};
         applySource.onClick=[this]{saveSource();};clearSource.onClick=[this]{mutate("source",movie::object({{"source",juce::var()}}));};
         rescan.onClick=[this]{owner.visualCapture.refresh();populateMedia();};
-        pairWebcam.onClick=[this]{
-            juce::Array<juce::IPAddress> addresses;juce::IPAddress::findAllAddresses(addresses,false);juce::PopupMenu menu;juce::StringArray choices;
-            for(const auto& ip:addresses){const auto text=ip.toString();if(text.startsWith("10.")||text.startsWith("192.168.")||(text.startsWith("172.")&&text.fromFirstOccurrenceOf(".",false,false).getIntValue()>=16&&text.fromFirstOccurrenceOf(".",false,false).getIntValue()<=31)){choices.add(text);menu.addItem(choices.size(),"Pair on "+text+" : 8765");}}
-            menu.addSeparator();menu.addItem(1000,"Disconnect WebCam / revoke invitation");const juce::Component::SafePointer<TrackInspector> safe(this);
-            menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&pairWebcam),[safe,choices](int selected){if(!safe||!selected)return;
-                if(selected==1000){safe->owner.runUi("movie.webcam.stop");return;}
-                if(!juce::isPositiveAndBelow(selected-1,choices.size()))return;
-                static juce::Component::SafePointer<MovieWebCamPairing> activePairing;
-                if(activePairing){activePairing->grabKeyboardFocus();return;}
-                const juce::Component::SafePointer<MainComponent> host(&safe->owner);
-                const auto address=choices[selected-1];
-                auto* pairing=new MovieWebCamPairing([host,address]{
-                    if(!host)throw std::runtime_error("Movie has closed.");
-                    const auto result=host->execute("movie.webcam.invite",movie::object({{"address",address},{"port",8765}}));
-                    if(!result.ok)throw std::runtime_error(result.message.toStdString());
-                    return result.data;
-                },[host]{return host?host->visualCapture.webcamStatus()["state"].toString():juce::String("stopped");},
-                [host]{if(host)host->visualCapture.stopWebcam();});
-                activePairing=pairing;
-                juce::DialogWindow::LaunchOptions options;
-                options.dialogTitle="Pair Djehuti WebCam";
-                options.dialogBackgroundColour=juce::Colour(0xff263238);
-                options.content.setOwned(pairing);options.componentToCentreAround=host.getComponent();
-                options.useNativeTitleBar=true;options.resizable=false;options.escapeKeyTriggersCloseButton=true;
-                options.launchAsync();
-            });
-        };
+        pairWebcam.onClick=[this]{owner.showPhonePairing();};
         remove.onClick=[this]{owner.removeTrack(owner.selectedTrack);};
         effects.onClick=[this]{if(owner.dock)owner.dock->activatePanel("effects");};
         note.setJustificationType(juce::Justification::topLeft);automation.setJustificationType(juce::Justification::topLeft);
@@ -253,7 +227,7 @@ private:
     juce::TextButton applySource{"Apply Source"},clearSource{"Clear Source"},remove{"Remove Track..."};
     juce::TextButton effects{"Effects Browser / Inspector..."};
     juce::TextButton rescan{"Refresh available sources"};
-    juce::TextButton pairWebcam{"Pair / disconnect Djehuti WebCam..."};
+    juce::TextButton pairWebcam{"Pair Phone"};
     juce::String catalogStamp;
 };
 void MainComponent::selectTrack(const juce::String& id,bool showInspector)

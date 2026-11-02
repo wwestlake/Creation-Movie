@@ -1,5 +1,7 @@
 #include "MovieWebCam.h"
 #include "MovieCaptureMonitor.h"
+#include "MovieWebCamNetwork.h"
+#include "MovieWebCamQr.h"
 #include <iostream>
 #include <thread>
 
@@ -10,14 +12,35 @@ int main(int argc,char** argv){
      monitor.write(1,1);++monitor.generation;left[0]=right[0]=0;monitor.render(outputs,2,4);if(left[0]||right[0])return 3;
      monitor.write(1,1);monitor.enabled=false;monitor.render(outputs,2,4);if(left[0]||right[0])return 3;}
     if(argc==2&&juce::String(argv[1])=="--unit"){
-        try{movie::WebCamCapture::verifyTimingBoundaries();}catch(const std::exception& error){std::cerr<<error.what()<<"\n";return 3;}
+        try{
+            const auto candidates=movie::selectWebCamAddresses({
+                {"192.168.2.3",true,true,true,false,20},{"10.20.0.4",true,true,false,false,5},
+                {"172.16.3.4",true,false,false,true,1},{"192.168.2.3",true,true,true,false,20},
+                {"192.168.40.1",true,false,false,false,1},{"192.168.80.1",false,true,true,false,1},
+                {"8.8.8.8",true,true,true,false,1},{"169.254.1.1",true,true,false,false,1}});
+            if(candidates!=std::vector<std::string>{"10.20.0.4","192.168.2.3","172.16.3.4"})throw std::runtime_error("Automatic interface ranking/filtering failed");
+            movie::WebCamCapture::verifyTimingBoundaries();}catch(const std::exception& error){std::cerr<<error.what()<<"\n";return 3;}
         std::cout<<"Monitor and timing boundary checks passed: render/mute/generation, probe outliers, wall step, RTP wrap, missing anchors, bounded receive queue\n";return 0;
+    }
+    if(argc==3&&juce::String(argv[1])=="--pairing-check"){
+        const juce::File output(juce::String::fromUTF8(argv[2]));if(!output.isDirectory())return 2;
+        movie::WebCamCapture capture;
+        auto issue=[&]{const auto invitation=capture.invite({},8765);output.getChildFile("invitation.private.json").replaceWithText(juce::JSON::toString(invitation));
+            auto qr=movieWebCamQrImage(juce::JSON::toString(invitation,true));auto file=output.getChildFile("invitation.private.png").createOutputStream();juce::PNGImageFormat().writeImageToStream(qr,*file);};
+        issue();const auto end=juce::Time::getMillisecondCounterHiRes()+45000;
+        while(juce::Time::getMillisecondCounterHiRes()<end&&!output.getChildFile("stop").existsAsFile()){
+            juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+            if(output.getChildFile("expire").existsAsFile()){output.getChildFile("expire").deleteFile();capture.expireInvitationForTest();}
+            if(output.getChildFile("renew").existsAsFile()){output.getChildFile("renew").deleteFile();issue();}
+            output.getChildFile("status.json").replaceWithText(juce::JSON::toString(capture.status()));
+        }
+        capture.stop();output.getChildFile("invitation.private.json").deleteFile();output.getChildFile("invitation.private.png").deleteFile();return 0;
     }
     if(argc!=3){std::cerr<<"Usage: WebCamReceiverTests <private-output-folder> <LAN-IPv4>\n";return 2;}
     const juce::File output(juce::String::fromUTF8(argv[1]));if(!output.isDirectory()){std::cerr<<"Create output directory first\n";return 2;}
     try{
         movie::WebCamCapture capture;
-        const auto invitation=capture.invite(juce::String::fromUTF8(argv[2]),8765);
+        const auto invitation=capture.invite(juce::String(argv[2])=="auto"?juce::String():juce::String::fromUTF8(argv[2]),8765);
         output.getChildFile("invitation.private.json").replaceWithText(juce::JSON::toString(invitation));
         auto first=std::make_shared<movie::CaptureQueue>(),second=std::make_shared<movie::CaptureQueue>(),audio=std::make_shared<movie::CaptureQueue>();
         first->after=0;second->after=0;audio->after=0;

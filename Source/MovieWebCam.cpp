@@ -1,5 +1,6 @@
 #include "MovieWebCam.h"
 #include "MovieCaptureMonitor.h"
+#include "MovieWebCamNetwork.h"
 #include <rtc/rtc.hpp>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
@@ -46,11 +47,11 @@ struct ReceiverReports:rtc::MediaHandler {
 }
 struct WebCamCapture::Impl : std::enable_shared_from_this<WebCamCapture::Impl> {
     mutable std::mutex mutex;std::mutex queueMutex;std::condition_variable wake;std::atomic<bool> quitting{false},queueOverflow{false};
-    std::thread worker;std::unique_ptr<rtc::WebSocketServer> server;std::shared_ptr<rtc::PeerConnection> peer;
+    std::thread worker;std::vector<std::unique_ptr<rtc::WebSocketServer>> servers;std::shared_ptr<rtc::PeerConnection> peer;
     std::vector<std::shared_ptr<rtc::WebSocket>> sockets;std::vector<std::shared_ptr<rtc::Track>> tracks;std::shared_ptr<rtc::DataChannel> channel;
     std::vector<VisualBinding> bindings;std::vector<RecordingSubscription> subscriptions;
     CaptureMonitor monitor;std::atomic<double> outputRate{48000};double monitorAt=0,monitorRate=0;
-    juce::String session,state{"stopped"},error,address;Bytes secret;juce::int64 expires=0,lastProbe=0;
+    juce::String session,state{"stopped"},error,address;Bytes secret;juce::int64 expires=0,lastProbe=0,negotiationDeadline=0;
     bool consumed=false,failed=false,localTransport=false;int clockSamples=0;double phoneToHost=0,wallOffset=0,bestRtt=1e30;juce::int64 uncertainty=INT64_MAX;
     juce::String queueGeneration;
     struct Packet {int stream;Bytes data;juce::int64 arrival;juce::String generation;};std::deque<Packet> incoming;std::atomic<size_t> queued{0};
@@ -66,11 +67,11 @@ struct WebCamCapture::Impl : std::enable_shared_from_this<WebCamCapture::Impl> {
     ~Impl(){stop();quitting=true;wake.notify_all();worker.join();}
     void stop(){
         monitor.enabled=false;++monitor.generation;
-        std::unique_ptr<rtc::WebSocketServer> oldServer;std::shared_ptr<rtc::PeerConnection> oldPeer;
+        std::vector<std::unique_ptr<rtc::WebSocketServer>> oldServers;std::shared_ptr<rtc::PeerConnection> oldPeer;
         std::vector<std::shared_ptr<rtc::WebSocket>> oldSockets;
-        {std::lock_guard lock(mutex);oldServer=std::move(server);oldPeer=std::move(peer);oldSockets.swap(sockets);channel.reset();tracks.clear();session={};secret.clear();state="stopped";for(auto& s:streams){s.preview.state="unavailable";s.preview.message="WebCam stopped; pair again to reconnect.";}}
+        {std::lock_guard lock(mutex);oldServers=std::move(servers);oldPeer=std::move(peer);oldSockets.swap(sockets);channel.reset();tracks.clear();session={};secret.clear();state="stopped";for(auto& s:streams){s.preview.state="unavailable";s.preview.message="WebCam stopped; pair again to reconnect.";}}
         {std::lock_guard lock(queueMutex);incoming.clear();queued=0;queueGeneration={};queueOverflow=false;}
-        if(oldServer)oldServer->stop();for(auto& s:oldSockets){s->resetCallbacks();s->forceClose();}if(oldPeer){oldPeer->resetCallbacks();oldPeer->close();}
+        for(auto& server:oldServers)server->stop();for(auto& s:oldSockets){s->resetCallbacks();s->forceClose();}if(oldPeer){oldPeer->resetCallbacks();oldPeer->close();}
     }
     bool enqueue(int stream,const unsigned char* p,size_t n,const juce::String& generation){
         std::lock_guard lock(queueMutex);if(n>65536||generation!=queueGeneration)return false;
@@ -79,32 +80,48 @@ struct WebCamCapture::Impl : std::enable_shared_from_this<WebCamCapture::Impl> {
         return true;
     }
     juce::var invite(const juce::String& ip,int port){
-        const auto a=juce::StringArray::fromTokens(ip,".","");if(a.size()!=4 || !((a[0]=="10") || (a[0]=="192"&&a[1]=="168") || (a[0]=="172"&&a[1].getIntValue()>=16&&a[1].getIntValue()<=31)))throw std::runtime_error("Choose a private LAN IPv4 address.");
-        for(const auto& x:a)if(!x.containsOnly("0123456789")||x.getIntValue()>255)throw std::runtime_error("Invalid LAN address");
-        if(port<1024||port>65535)throw std::runtime_error("Choose a port from 1024 to 65535");stop();
+        auto candidates=ip.isEmpty()?discoverWebCamAddresses():std::vector<std::string>{ip.toStdString()};
+        std::erase_if(candidates,[](const auto& value){return !privateV4(value);});
+        if(candidates.empty())throw std::runtime_error("No usable local network found. Connect the PC to a local network and try Pair Phone again.");
+        if(port<1024||port>65535)throw std::runtime_error("Invalid local listening port");stop();
         std::lock_guard lock(mutex);for(auto& s:streams)s.clear();secret=randomBytes(32);session=juce::String::toHexString(randomBytes(16).data(),16,0);consumed=false;failed=false;clockSamples=0;bestRtt=1e30;uncertainty=INT64_MAX;expires=captureHostTime()+1200000000;address=ip;state="pairing";error={};
         {std::lock_guard lock(queueMutex);queueGeneration=session;}
         localTransport=false;
-        rtc::WebSocketServer::Configuration config;config.bindAddress=ip.toStdString();config.port=(uint16_t)port;config.maxMessageSize=131072;config.connectionTimeout=std::chrono::seconds(10);
-        server=std::make_unique<rtc::WebSocketServer>(config);
-        server->onClient([this,lifetime=weak_from_this(),generation=session](std::shared_ptr<rtc::WebSocket> socket){
-            auto alive=lifetime.lock();if(!alive)return;
-            {std::lock_guard lock(mutex);std::erase_if(sockets,[](const auto& s){return s->isClosed();});if(generation!=session || consumed || captureHostTime()>expires || sockets.size()>=4){socket->close();return;}sockets.push_back(socket);}
-            std::weak_ptr<rtc::WebSocket> weak=socket;
-            socket->onMessage([this,lifetime,weak,generation](rtc::message_variant message){auto alive=lifetime.lock();if(!alive)return;if(auto socket=weak.lock())if(auto* text=std::get_if<std::string>(&message))authenticate(socket,*text,generation);});
-        });
-        return object({{"protocol","djehuti-webcam-feasibility-v1"},{"session",session},{"secret",b64(secret)},{"endpoint","ws://"+ip+":"+juce::String(server->port())+"/signal"}});
+        juce::Array<juce::var> endpoints;
+        for(const auto& candidate:candidates){
+            try{
+                rtc::WebSocketServer::Configuration config;config.bindAddress=candidate;config.port=(uint16_t)port;config.maxMessageSize=131072;config.connectionTimeout=std::chrono::seconds(5);
+                auto server=std::make_unique<rtc::WebSocketServer>(config);
+                server->onClient([this,lifetime=weak_from_this(),generation=session,bind=candidate](std::shared_ptr<rtc::WebSocket> socket){
+                    auto alive=lifetime.lock();if(!alive)return;
+                    {std::lock_guard lock(mutex);std::erase_if(sockets,[](const auto& s){return s->isClosed();});if(generation!=session || sockets.size()>=4){socket->close();return;}sockets.push_back(socket);}
+                    std::weak_ptr<rtc::WebSocket> weak=socket;
+                    socket->onMessage([this,lifetime,weak,generation,bind](rtc::message_variant message){auto alive=lifetime.lock();if(!alive)return;if(auto socket=weak.lock())if(auto* text=std::get_if<std::string>(&message))authenticate(socket,*text,generation,bind);});
+                });
+                endpoints.add("ws://"+juce::String(candidate)+":"+juce::String(server->port())+"/signal");
+                servers.push_back(std::move(server));
+            }catch(const std::exception&){juce::Logger::writeToLog("WebCam: could not bind a discovered interface; trying remaining interfaces.");}
+        }
+        if(endpoints.isEmpty()){state="failed";error="Cannot listen for your phone. Check that the local port is available and try again.";throw std::runtime_error(error.toStdString());}
+        return object({{"protocol","djehuti-webcam-feasibility-v1"},{"session",session},{"secret",b64(secret)},
+            {"endpoint",endpoints[0]},{"endpoints",endpoints},{"expiresAtUnixMs",juce::Time::currentTimeMillis()+120000}});
     }
-    void authenticate(std::shared_ptr<rtc::WebSocket> socket,const std::string& text,const juce::String& generation){
+    void authenticate(std::shared_ptr<rtc::WebSocket> socket,const std::string& text,const juce::String& generation,const std::string& bind){
         try{
             std::shared_ptr<rtc::PeerConnection> connection;Bytes localSecret;juce::String sdp;
             {
-                std::lock_guard lock(mutex);if(socket->path().value_or("")!="/signal"||generation!=session||consumed||captureHostTime()>expires||text.size()>131072)throw std::runtime_error("Invitation unavailable");
+                std::lock_guard lock(mutex);if(socket->path().value_or("")!="/signal"||generation!=session||text.size()>131072)throw std::runtime_error("Invitation unavailable");
                 const auto envelope=juce::JSON::parse(juce::String(text));if(envelope["session"].toString()!=session)throw std::runtime_error("Wrong session");
                 const auto plain=crypt(false,keyFor(secret,session,"offer"),unb64(envelope["nonce"]),unb64(envelope["ciphertext"]),session);
                 const auto offer=juce::JSON::parse(juce::String::fromUTF8((const char*)plain.data(),(int)plain.size()));
                 sdp=offer["sdp"].toString();if(offer["type"].toString()!="offer"||sdp.length()>96000||sdp.isEmpty())throw std::runtime_error("Invalid offer");
-                consumed=true;state="negotiating";localSecret=secret;
+                if(consumed||captureHostTime()>expires){
+                    auto nonce=randomBytes(12);
+                    auto rejection=bytes(juce::JSON::toString(object({{"type","error"},{"code",consumed?"consumed":"expired"}})));
+                    socket->send(juce::JSON::toString(object({{"session",session},{"nonce",b64(nonce)},{"ciphertext",b64(crypt(true,keyFor(secret,session,"answer"),nonce,rejection,session))}})).toStdString());
+                    socket->close();return;
+                }
+                consumed=true;state="negotiating";localSecret=secret;address=bind;negotiationDeadline=captureHostTime()+300000000;
                 rtc::Configuration config;config.iceServers.clear();config.disableAutoNegotiation=true;config.bindAddress=address.toStdString();
                 peer=connection=std::make_shared<rtc::PeerConnection>(config);
             }
@@ -129,7 +146,7 @@ struct WebCamCapture::Impl : std::enable_shared_from_this<WebCamCapture::Impl> {
                 {std::lock_guard lock(mutex);if(generation!=session)return;channel=c;}
                 c->onMessage([this,lifetime,generation](rtc::message_variant m){auto alive=lifetime.lock();if(!alive)return;if(auto* text=std::get_if<std::string>(&m))clockReply(*text,generation);});
             });
-            connection->onStateChange([this,lifetime=weak_from_this(),generation](rtc::PeerConnection::State value){auto alive=lifetime.lock();if(!alive)return;std::lock_guard lock(mutex);if(generation!=session)return;if(value==rtc::PeerConnection::State::Connected)state="connected";if(value==rtc::PeerConnection::State::Disconnected||value==rtc::PeerConnection::State::Failed||value==rtc::PeerConnection::State::Closed){state="disconnected";for(auto& s:streams){s.preview.state="unavailable";s.preview.message="WebCam disconnected. Pair again with a fresh invitation.";}}});
+            connection->onStateChange([this,lifetime=weak_from_this(),generation](rtc::PeerConnection::State value){auto alive=lifetime.lock();if(!alive)return;std::lock_guard lock(mutex);if(generation!=session)return;if(value==rtc::PeerConnection::State::Connected&&!failed)state="connected";if(value==rtc::PeerConnection::State::Disconnected||value==rtc::PeerConnection::State::Failed||value==rtc::PeerConnection::State::Closed){state="failed";error="Phone connection ended. Check the local network and firewall, then scan a fresh QR code.";for(auto& s:streams){s.preview.state="unavailable";s.preview.message="WebCam disconnected. Pair again with a fresh invitation.";}}});
             connection->onGatheringStateChange([weak,socket,generation,localSecret](rtc::PeerConnection::GatheringState value){
                 if(value!=rtc::PeerConnection::GatheringState::Complete)return;
                 try{auto c=weak.lock();if(!c)return;auto description=c->localDescription();if(!description)return;
@@ -138,7 +155,7 @@ struct WebCamCapture::Impl : std::enable_shared_from_this<WebCamCapture::Impl> {
                 }catch(...){socket->close();}
             });
             connection->setRemoteDescription(rtc::Description(sdp.toStdString(),"offer"));connection->setLocalDescription(rtc::Description::Type::Answer);
-        }catch(...){socket->close();}
+        }catch(...){juce::Logger::writeToLog("WebCam: rejected signaling/authentication message (credentials and SDP omitted).");socket->close();}
     }
     void clockReply(const std::string& text,const juce::String& generation,juce::int64 observed=0){
         if(text.size()>4096)return;const auto t3=observed?observed:captureHostTime();const auto j=juce::JSON::parse(juce::String(text));
@@ -201,6 +218,8 @@ struct WebCamCapture::Impl : std::enable_shared_from_this<WebCamCapture::Impl> {
         while(!quitting){std::deque<Packet> pending;{std::unique_lock lock(queueMutex);wake.wait_for(lock,std::chrono::milliseconds(10));pending.swap(incoming);queued=0;}if(quitting)break;
             try{
                 {std::lock_guard lock(mutex);
+                if(state=="pairing"&&captureHostTime()>expires){state="expired";error="QR code expired. Choose New QR code.";}
+                if(state=="negotiating"&&captureHostTime()>negotiationDeadline)throw std::runtime_error("Media connection timed out. Check local network access and firewall rules, then try a fresh QR code.");
                 if(queueOverflow.exchange(false))throw std::runtime_error("WebCam receive queue overflow; retained recording prefix.");
                 if(peer&&state=="connected"&&!localTransport){rtc::Candidate local,remote;if(peer->getSelectedCandidatePair(&local,&remote)){if(local.type()!=rtc::Candidate::Type::Host||remote.type()!=rtc::Candidate::Type::Host||!privateV4(local.address().value_or(""))||!privateV4(remote.address().value_or("")))throw std::runtime_error("WebCam requires a direct private IPv4 host candidate pair.");localTransport=true;}}
                 if(channel&&channel->isOpen()&&captureHostTime()-lastProbe>5000000){lastProbe=captureHostTime();channel->send(juce::JSON::toString(object({{"type","clock-probe"},{"id",juce::String(lastProbe)},{"hostSend100ns",juce::String(lastProbe)}})).toStdString());}
@@ -222,6 +241,7 @@ VisualPreview WebCamCapture::preview(const juce::String& id)const{std::lock_guar
 juce::var WebCamCapture::status()const{std::lock_guard lock(impl->mutex);return object({{"state",impl->state},{"error",impl->error},{"localTransportVerified",impl->localTransport},{"clockSamples",impl->clockSamples},{"uncertainty100ns",impl->uncertainty},{"queuedBytes",(juce::int64)impl->queued.load()},{"monitorRenderedFrames",impl->monitor.rendered.load()},{"monitorDroppedFrames",impl->monitor.dropped.load()},{"videoClockAnchor",impl->streams[0].anchored},{"audioClockAnchor",impl->streams[1].anchored},{"videoFrames",impl->streams[0].sequence},{"audioFrames",impl->streams[1].sequence}});}
 void WebCamCapture::renderAudio(float*const* output,int channels,int frames,double rate){impl->outputRate=rate;impl->monitor.render(output,channels,frames);}
 #if MOVIE_WEBCAM_TESTS
+void WebCamCapture::expireInvitationForTest(){std::lock_guard lock(impl->mutex);impl->expires=0;}
 void WebCamCapture::verifyTimingBoundaries(){
     auto require=[](bool condition,const char* message){if(!condition)throw std::runtime_error(message);};
     Impl clock;clock.session="test-generation";
