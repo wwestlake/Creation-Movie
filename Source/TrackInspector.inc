@@ -38,10 +38,24 @@ public:
             menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&pairWebcam),[safe,choices](int selected){if(!safe||!selected)return;
                 if(selected==1000){safe->owner.runUi("movie.webcam.stop");return;}
                 if(!juce::isPositiveAndBelow(selected-1,choices.size()))return;
-                const auto result=safe->owner.execute("movie.webcam.invite",movie::object({{"address",choices[selected-1]},{"port",8765}}));
-                if(!result.ok){safe->owner.warn(result.message);return;}
-                juce::SystemClipboard::copyTextToClipboard(juce::JSON::toString(result.data,true));
-                juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,"Pair Djehuti WebCam","Private invitation copied. Transfer it privately to Djehuti WebCam on your phone, then Connect and stream. It expires in 120 seconds and can be used once. Refresh after connecting; select WebCam video under Camera or WebCam audio under Microphone.");
+                static juce::Component::SafePointer<MovieWebCamPairing> activePairing;
+                if(activePairing){activePairing->grabKeyboardFocus();return;}
+                const juce::Component::SafePointer<MainComponent> host(&safe->owner);
+                const auto address=choices[selected-1];
+                auto* pairing=new MovieWebCamPairing([host,address]{
+                    if(!host)throw std::runtime_error("Movie has closed.");
+                    const auto result=host->execute("movie.webcam.invite",movie::object({{"address",address},{"port",8765}}));
+                    if(!result.ok)throw std::runtime_error(result.message.toStdString());
+                    return result.data;
+                },[host]{return host?host->visualCapture.webcamStatus()["state"].toString():juce::String("stopped");},
+                [host]{if(host)host->visualCapture.stopWebcam();});
+                activePairing=pairing;
+                juce::DialogWindow::LaunchOptions options;
+                options.dialogTitle="Pair Djehuti WebCam";
+                options.dialogBackgroundColour=juce::Colour(0xff263238);
+                options.content.setOwned(pairing);options.componentToCentreAround=host.getComponent();
+                options.useNativeTitleBar=true;options.resizable=false;options.escapeKeyTriggersCloseButton=true;
+                options.launchAsync();
             });
         };
         remove.onClick=[this]{owner.removeTrack(owner.selectedTrack);};

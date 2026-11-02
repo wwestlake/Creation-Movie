@@ -1,4 +1,5 @@
 #include "MainComponent.h"
+#include "MovieWebCamPairing.h"
 #if JUCE_DEBUG
 #include "MovieRecordingWriter.h"
 #endif
