@@ -117,6 +117,7 @@ target_include_directories(CreationMovieApp PRIVATE
 target_sources(CreationMovieApp PRIVATE
     Source/Main.cpp
     Source/MainComponent.cpp
+    ThirdParty/qrcodegen/qrcodegen.cpp
     Source/MainComponent.h
     Source/TrackTimeline.inc
     Source/TrackInspector.inc
