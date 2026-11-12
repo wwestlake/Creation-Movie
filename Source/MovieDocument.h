@@ -23,6 +23,7 @@ struct Media
 {
     juce::String id, versionId, name, path;
     MediaInfo info;
+    bool catalogued = false;
 };
 // Reuse Station's shared identity/name/display and automation curve types.
 // Movie-specific source configuration never contains runtime device handles.
@@ -56,7 +57,7 @@ struct Sequence
     double frameSeconds() const { return (double) fpsDen / fpsNum; }
     double snap(double seconds) const { return std::round(seconds / frameSeconds()) * frameSeconds(); }
     double duration() const;
-    const Media* findMedia(const juce::String&) const;
+    const Media* findMedia(const juce::String&, const juce::String& versionId = {}) const;
     int findClip(const juce::String&) const;
     juce::var toJson() const;
     static bool fromJson(const juce::var&, Sequence&, juce::String& error);

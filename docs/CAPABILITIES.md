@@ -1,5 +1,25 @@
 # Djehuti Movie capabilities
 
+## Shared projects (Order 1, review branch)
+
+Movie opens valid Suite VFS projects, including Station projects with no saved
+Movie sequence. Its own edits stay in `Project/movie-state.json`; Station's
+`session.xml` is neither interpreted nor written. Missing Movie state starts an
+empty edit; an unreadable/malformed existing sequence is rejected.
+
+Compatible catalog media are resolved through VFS streams using their original
+asset/version IDs and paths. Imports and finalized recording references are
+registered in the shared catalog. **Refresh** in Project Media, or
+`movie.media.refresh`, discovers peer media without an export/import or copy.
+Placements persist exact asset versions when newer versions appear; undo/redo
+retains independently discovered media. Refresh is explicit while a project
+stays open. This does not add shared transport or edit syncing.
+
+Safe catalog saves require the updated Suite VFS service. Older services produce
+a save error instead of accepting an unsafe manifest replacement. See
+[the Order 1 engineering report](../../../docs/architecture/Station-Movie-Shared-Project-Order-1.md)
+for validation and review dependencies. No merge or release is implied.
+
 ## WebCam Order 3 (implementation ready for physical testing)
 
 The existing Android Remote project is repurposed as Djehuti WebCam. Movie has an
