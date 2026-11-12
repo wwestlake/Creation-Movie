@@ -124,6 +124,7 @@ target_sources(CreationMovieApp PRIVATE
     Source/TrackUiCheck.inc
     Source/EffectsPanel.inc
     Source/MovieDocument.cpp
+    Source/MovieProjectMedia.cpp Source/MovieProjectMedia.h
     Source/MovieRecording.cpp Source/MovieRecordingWriter.cpp
     Source/MovieTracks.cpp
     Source/MovieVisualCapture.cpp Source/MovieDeviceCapture.cpp Source/MovieVisualCapture.h

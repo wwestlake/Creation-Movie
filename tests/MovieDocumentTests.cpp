@@ -15,6 +15,25 @@ int main()
 {
     try
     {
+        {
+            Document versions;
+            Media old;old.id="shared-audio";old.versionId="shared-audio@1";old.name="Shared sound";
+            old.path="Assets/Source/sound.wav";old.info.hasAudio=true;old.info.duration=10;
+            auto newer=old;newer.versionId="shared-audio@2";newer.path="Assets/Derived/sound@2.wav";
+            versions.sequence.media={newer,old};
+            edit(versions,"place",object({{"assetId",old.id},{"versionId",old.versionId},{"duration",1.0}}));
+            check(versions.sequence.clips[0].assetVersionId==old.versionId,"Placement did not pin the requested shared version");
+            Sequence reopened;juce::String error;
+            check(Sequence::fromJson(versions.sequence.toJson(),reopened,error),error.toRawUTF8());
+            check(reopened.clips[0].assetVersionId==old.versionId && reopened.findMedia(old.id,old.versionId)->path==old.path,"Save/reopen retargeted a pinned version");
+            auto latest=old;latest.versionId="shared-audio@3";latest.path="Assets/Derived/sound@3.wav";latest.catalogued=true;
+            versions.sequence.media.insert(versions.sequence.media.begin(),latest);
+            versions.undo.undo();
+            check(versions.sequence.findMedia(old.id)->versionId==latest.versionId,"Undo discarded/reordered independently refreshed catalog versions");
+            versions.undo.redo();
+            auto bad=versions.sequence.toJson();bad["media"][0].getDynamicObject()->setProperty("path","../outside.wav");
+            check(!Sequence::fromJson(bad,reopened,error),"Unsafe VFS media path accepted");
+        }
         Document d;
         Media media;media.id="asset";media.versionId="original-version";media.name="test";media.path="Media/test";
         media.info.hasVideo=true;media.info.hasAudio=true;media.info.duration=20;media.info.width=640;media.info.height=360;

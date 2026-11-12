@@ -29,19 +29,19 @@ MediaInfo MediaInfo::fromJson(const juce::var& v)
     return m;
 }
 double Sequence::duration() const { double d=0; for(const auto& c:clips) d=std::max(d,c.startSeconds+c.durationSeconds); return d; }
-const Media* Sequence::findMedia(const juce::String& id) const { for(const auto& m:media) if(m.id==id) return &m; return nullptr; }
+const Media* Sequence::findMedia(const juce::String& id, const juce::String& version) const { for(const auto& m:media) if(m.id==id && (version.isEmpty() || m.versionId==version)) return &m; return nullptr; }
 int Sequence::findClip(const juce::String& id) const { for(size_t i=0;i<clips.size();++i) if(clips[i].id==id) return (int)i; return -1; }
 juce::var Sequence::toJson() const
 {
     juce::Array<juce::var> a,c,t,transitionsJson;
     for(const auto& tr:transitions)transitionsJson.add(tr.toJson(false));
     for(const auto& track:tracks) t.add(track.toJson());
-    for(const auto& m:media) a.add(object({{"id",m.id},{"versionId",m.versionId},{"name",m.name},{"path",m.path},{"info",m.info.toJson()}}));
+    for(const auto& m:media) a.add(object({{"id",m.id},{"versionId",m.versionId},{"name",m.name},{"path",m.path},{"info",m.info.toJson()},{"catalogued",m.catalogued}}));
     for(const auto& x:clips)
     {
         auto params=juce::var(new juce::DynamicObject());
         params.getDynamicObject()->getProperties()=x.videoParams;
-        c.add(object({{"id",x.id},{"assetId",x.assetId},{"name",x.displayName},{"trackId",owner(x)},
+        c.add(object({{"id",x.id},{"assetId",x.assetId},{"assetVersionId",x.assetVersionId},{"name",x.displayName},{"trackId",owner(x)},
             {"kind",x.kind==creation::timeline::ClipKind::audio ? "audio":"video"},
             {"startSeconds",x.startSeconds},{"durationSeconds",x.durationSeconds},{"startFrame",(juce::int64)std::llround(x.startSeconds/frameSeconds())},
             {"durationFrames",(juce::int64)std::llround(x.durationSeconds/frameSeconds())},
@@ -85,10 +85,14 @@ bool Sequence::fromJson(const juce::var& v, Sequence& result, juce::String& erro
         }
     }
     ids.clear();
+    std::set<std::pair<juce::String,juce::String>> mediaVersions;
     for(const auto& e:*a)
     {
         Media m{e["id"].toString(),e["versionId"].toString(),e["name"].toString(),e["path"].toString(),MediaInfo::fromJson(e["info"])};
-        if(m.id.isEmpty() || !ids.insert(m.id).second || !m.path.startsWith("Media/") || m.path.contains("..")
+        m.catalogued = e.getProperty("catalogued",false);
+        if(m.id.isEmpty() || m.versionId.isEmpty() || !mediaVersions.emplace(m.id,m.versionId).second
+            || m.path.isEmpty() || m.path.startsWithChar('/') || m.path.containsChar(':') || m.path.containsChar('\\')
+            || m.path.contains("..")
             || !std::isfinite(m.info.duration) || m.info.duration<=0 || m.info.width<0 || m.info.height<0
             || m.info.width>32768 || m.info.height>32768 || !std::isfinite(m.info.pixelAspect) || m.info.pixelAspect<=0)
             return fail("Invalid media identity, path or metadata.");
@@ -97,7 +101,7 @@ bool Sequence::fromJson(const juce::var& v, Sequence& result, juce::String& erro
     ids.clear();
     for(const auto& e:*c)
     {
-        Clip x; x.id=e["id"].toString();x.assetId=e["assetId"].toString();x.displayName=e["name"].toString();
+        Clip x; x.id=e["id"].toString();x.assetId=e["assetId"].toString();x.assetVersionId=e["assetVersionId"].toString();x.displayName=e["name"].toString();
         const auto trackId=version==2?"legacy-track-"+e["track"].toString():e["trackId"].toString();
         if(version==2 && (!e["track"].isInt() || (int)e["track"]<0 || (int)e["track"]>7)) return fail("Invalid legacy track index.");
         x.trackIndex=s.findTrack(trackId);
@@ -109,7 +113,7 @@ bool Sequence::fromJson(const juce::var& v, Sequence& result, juce::String& erro
         else if(e.hasProperty("startSeconds") || e.hasProperty("durationSeconds"))return fail("Precise clip timing requires Movie schema 6.");
         x.sourceStartSeconds=e["sourceIn"];x.sourceDurationSeconds=e["sourceDuration"];
         if(auto* p=e["params"].getDynamicObject()) x.videoParams=p->getProperties();
-        const auto* m=s.findMedia(x.assetId);
+        const auto* m=s.findMedia(x.assetId,x.assetVersionId);
         const bool title=x.videoParams["title"].toString().isNotEmpty();
         if(x.id.isEmpty() || !ids.insert(x.id).second || x.trackIndex<0 || x.startSeconds<0
             || x.startSeconds>86400 || x.durationSeconds<(version>=6?1e-9:s.frameSeconds()) || x.durationSeconds>86400 || x.sourceStartSeconds<0
@@ -154,7 +158,17 @@ struct Document::Edit : juce::UndoableAction
 {
     Document& d; Sequence before, after;
     Edit(Document& doc,Sequence a,Sequence b):d(doc),before(std::move(a)),after(std::move(b)){}
-    bool apply(const Sequence& s){d.sequence=s;d.dirty=true;if(d.changed)d.changed();return true;}
+    bool apply(const Sequence& s)
+    {
+        auto next=s;
+        // Undo changes editing structures, not the independently registered
+        // project catalog. Keep media learned from another app after this edit.
+        auto media=d.sequence.media;
+        for(const auto& item:s.media)
+            if(std::none_of(media.begin(),media.end(),[&](const auto& retained){return retained.id==item.id && retained.versionId==item.versionId;}))media.push_back(item);
+        next.media=std::move(media);
+        d.sequence=std::move(next);d.dirty=true;if(d.changed)d.changed();return true;
+    }
     bool perform() override{return apply(after);} bool undo() override{return apply(before);}
     int getSizeInUnits() override{return (int)(before.clips.size()+after.clips.size()+1);}
 };
@@ -288,7 +302,7 @@ bool Document::edit(const juce::String& command,const juce::var& a,juce::String&
         }
         else
         {
-            auto* m=s.findMedia(a["assetId"].toString());if(!m)return fail("Unknown media asset.");
+            auto* m=s.findMedia(a["assetId"].toString(),a["versionId"].toString());if(!m)return fail("Unknown media asset version.");
             c.assetId=m->id;c.assetVersionId=m->versionId;c.displayName=m->name;c.sourceDurationSeconds=m->info.duration;
             c.kind=m->info.hasVideo?creation::timeline::ClipKind::video:creation::timeline::ClipKind::audio;
             if(!a.hasProperty("track") && !a.hasProperty("trackId"))

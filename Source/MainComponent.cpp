@@ -1,4 +1,5 @@
 #include "MainComponent.h"
+#include "MovieProjectMedia.h"
 #include "MovieWebCamPairing.h"
 #if JUCE_DEBUG
 #include "MovieRecordingWriter.h"
@@ -73,14 +74,17 @@ public:
             if (owner.selectedMedia.isNotEmpty())
                 owner.runUi("movie.timeline.place", movie::object({
                     { "assetId", owner.selectedMedia },
+                    { "versionId", owner.selectedMediaVersion },
                     { "trackId", owner.selectedTrack },
                     { "start", owner.playback.position() }
                 }));
         };
         titleBtn.onClick = [this] { owner.titleDialog(); };
+        refreshBtn.onClick = [this] { owner.runUi("movie.media.refresh"); };
         addAndMakeVisible(importBtn);
         addAndMakeVisible(placeBtn);
         addAndMakeVisible(titleBtn);
+        addAndMakeVisible(refreshBtn);
     }
 
     void paint(juce::Graphics& g) override
@@ -98,7 +102,7 @@ public:
         {
             g.setColour(juce::Colours::white.withAlpha(0.45f));
             g.setFont(juce::FontOptions(13.0f));
-            g.drawFittedText("No media imported yet.\nUse Import Media or movie.media.import.",
+            g.drawFittedText("No compatible project media yet.\nImport external media or refresh the shared project catalog.",
                              area.reduced(8), juce::Justification::centred, 3);
             return;
         }
@@ -110,7 +114,7 @@ public:
             if (row.getBottom() > getHeight() - 8)
                 break;
 
-            const bool selected = (m.id == owner.selectedMedia);
+            const bool selected = (m.id == owner.selectedMedia && m.versionId == owner.selectedMediaVersion);
             g.setColour(selected ? creation_movie::branding::accentColour().withAlpha(0.28f)
                                  : juce::Colour(0xff182232));
             g.fillRoundedRectangle(row.toFloat(), 6.0f);
@@ -140,12 +144,14 @@ public:
     void resized() override
     {
         auto top = getLocalBounds().reduced(10).removeFromTop(30);
-        const int w = std::max(60, (top.getWidth() - 8) / 3);
+        const int w = std::max(40, (top.getWidth() - 12) / 4);
         importBtn.setBounds(top.removeFromLeft(w));
         top.removeFromLeft(4);
         placeBtn.setBounds(top.removeFromLeft(w));
         top.removeFromLeft(4);
-        titleBtn.setBounds(top);
+        titleBtn.setBounds(top.removeFromLeft(w));
+        top.removeFromLeft(4);
+        refreshBtn.setBounds(top);
     }
 
     void mouseDown(const juce::MouseEvent& e) override
@@ -156,7 +162,7 @@ public:
         if (idx >= 0 && idx < (int) owner.document.sequence.media.size())
         {
             const auto& m = owner.document.sequence.media[(size_t) idx];
-            owner.selectMedia(m.id);
+            owner.selectMedia(m.id, m.versionId);
             if (e.mods.isPopupMenu())
             {
                 juce::PopupMenu mMenu;
@@ -164,12 +170,12 @@ public:
                 mMenu.addItem(2, "Append to End of Timeline");
                 mMenu.showMenuAsync(
                     juce::PopupMenu::Options().withTargetScreenArea({ e.getScreenX(), e.getScreenY(), 1, 1 }),
-                    [this, id = m.id](int res)
+                    [this, id = m.id, version = m.versionId](int res)
                     {
                         if (res == 1)
-                            owner.runUi("movie.timeline.place", movie::object({ { "assetId", id }, { "trackId", owner.selectedTrack }, { "start", owner.playback.position() } }));
+                            owner.runUi("movie.timeline.place", movie::object({ { "assetId", id }, { "versionId", version }, { "trackId", owner.selectedTrack }, { "start", owner.playback.position() } }));
                         else if (res == 2)
-                            owner.runUi("movie.timeline.place", movie::object({ { "assetId", id }, { "trackId", owner.selectedTrack }, { "start", owner.document.sequence.duration() } }));
+                            owner.runUi("movie.timeline.place", movie::object({ { "assetId", id }, { "versionId", version }, { "trackId", owner.selectedTrack }, { "start", owner.document.sequence.duration() } }));
                     });
             }
         }
@@ -181,6 +187,7 @@ public:
         if (owner.selectedMedia.isNotEmpty())
             owner.runUi("movie.timeline.place", movie::object({
                 { "assetId", owner.selectedMedia },
+                    { "versionId", owner.selectedMediaVersion },
                 { "trackId", owner.selectedTrack },
                 { "start", owner.playback.position() }
             }));
@@ -188,7 +195,7 @@ public:
 
 private:
     MainComponent& owner;
-    juce::TextButton importBtn { "Import..." }, placeBtn { "Place" }, titleBtn { "+ Title" };
+    juce::TextButton importBtn { "Import..." }, placeBtn { "Place" }, titleBtn { "+ Title" }, refreshBtn { "Refresh" };
 };
 
 // =============================================================================
@@ -301,7 +308,7 @@ public:
         double dur = seq.duration();
         if (sourceMode)
         {
-            if (const auto* m = seq.findMedia(owner.selectedMedia))
+            if (const auto* m = seq.findMedia(owner.selectedMedia, owner.selectedMediaVersion))
                 dur = m->info.duration;
             else
                 dur = 0.0;
@@ -346,7 +353,7 @@ private:
         double dur = owner.document.sequence.duration();
         if (sourceMode)
         {
-            if (const auto* m = owner.document.sequence.findMedia(owner.selectedMedia))
+            if (const auto* m = owner.document.sequence.findMedia(owner.selectedMedia, owner.selectedMediaVersion))
                 dur = m->info.duration;
             else
                 dur = 0.0;
@@ -652,19 +659,17 @@ MainComponent::MainComponent()
         {
             if (creation::assets::ProjectWorkspaceService::openProject(settings, summary.projectId, session, projErr))
             {
-                juce::MemoryBlock block;
-                if (session.readEntry(kMovieStateEntry, block))
+                try
                 {
                     movie::Sequence loaded;
-                    juce::String loadErr;
-                    if (movie::Sequence::fromJson(juce::JSON::parse(block.toString()), loaded, loadErr))
-                    {
-                        loaded.projectId = session.getProjectId();
-                        document.replace(std::move(loaded), true);
-                        opened = true;
-                        break;
-                    }
+                    juce::StringArray warnings;
+                    movie::loadProjectSequence(session, loaded, warnings);
+                    document.replace(std::move(loaded), true);
+                    if (!warnings.isEmpty()) lastStatus = warnings.joinIntoString("; ");
+                    opened = true;
+                    break;
                 }
+                catch (const std::exception& e) { lastStatus = e.what(); }
             }
         }
         if (! opened)
@@ -875,6 +880,7 @@ MainComponent::Result MainComponent::startJob(const juce::String& type,
                 active->status = "completed";
                 active->progress = 1.0;
                 safe->lastStatus = "Completed " + active->type + " job.";
+                if (out["warnings"].toString().isNotEmpty()) safe->lastStatus += " " + out["warnings"].toString();
             }
             safe->refresh();
             if (error.isEmpty() && active->type == "save")
@@ -982,6 +988,7 @@ MainComponent::Result MainComponent::execute(const juce::String& name, const juc
         const bool create = name == "movie.project.new";
         auto nextSession = std::make_shared<creation::assets::ProjectSession>();
         auto nextSequence = std::make_shared<movie::Sequence>();
+        auto mediaWarnings = std::make_shared<juce::StringArray>();
         const auto config = settings;
         if (create)
         {
@@ -1002,7 +1009,7 @@ MainComponent::Result MainComponent::execute(const juce::String& name, const juc
         playback.play(false);
         sourcePlayback.play(false);
         return startJob(create ? "new" : "open",
-            [create, config, a, nextSession, nextSequence](Job& j)
+            [create, config, a, nextSession, nextSequence, mediaWarnings](Job& j)
             {
                 juce::String error;
                 if (j.cancel.load()) throw std::runtime_error("Project operation cancelled.");
@@ -1022,26 +1029,23 @@ MainComponent::Result MainComponent::execute(const juce::String& name, const juc
                 {
                     if (!creation::assets::ProjectWorkspaceService::openProject(config, a["projectId"].toString(), *nextSession, error))
                         throw std::runtime_error(error.toStdString());
-                    juce::MemoryBlock block;
-                    if (!nextSession->readEntry(kMovieStateEntry, block))
-                        throw std::runtime_error("The selected project has no readable saved Movie sequence.");
-                    if (!movie::Sequence::fromJson(juce::JSON::parse(block.toString()), *nextSequence, error))
-                        throw std::runtime_error(error.toStdString());
-                    nextSequence->projectId = nextSession->getProjectId();
+                    movie::loadProjectSequence(*nextSession, *nextSequence, *mediaWarnings, &j.cancel);
                     if (j.cancel.load()) throw std::runtime_error("Opening project cancelled.");
                 }
-                return movie::object({{"projectId",nextSession->getProjectId()},{"name",nextSequence->name}});
+                return movie::object({{"projectId",nextSession->getProjectId()},{"name",nextSequence->name},
+                                      {"warnings",mediaWarnings->joinIntoString("; ")}});
             },
-            [this, nextSession, nextSequence](const juce::var&)
+            [this, nextSession, nextSequence, mediaWarnings](const juce::var&)
             {
                 // The current session is replaced only after the new one is valid.
                 session = *nextSession;
-                selectedClip = {}; selectedMedia = {};
+                selectedClip = {}; selectedMedia = {}; selectedMediaVersion = {};
                 document.replace(*nextSequence, true);
                 playback.seek(0);
                 sourcePlayback.setSequence(movie::Sequence{});
                 engineer.setProjectId(session.getProjectId());
                 cards->refresh();
+                if (!mediaWarnings->isEmpty()) lastStatus = mediaWarnings->joinIntoString("; ");
             });
     }
 
@@ -1049,15 +1053,16 @@ MainComponent::Result MainComponent::execute(const juce::String& name, const juc
     {
         if (!session.isValid())
             return Result::failure("no_project", "No active VFS project session.");
-        const auto snapshot = document.sequence;
+        auto snapshot = document.sequence;
         auto target = session;
         return startJob("save", [snapshot, target](Job& j) mutable
             {
                 if (j.cancel.load()) throw std::runtime_error("Save cancelled before writing.");
+                juce::String error;
+                if (!movie::registerSequenceMedia(target, snapshot, error)) throw std::runtime_error(error.toStdString());
                 const auto json = juce::JSON::toString(snapshot.toJson());
                 if (!target.writeEntry(kMovieStateEntry, juce::MemoryBlock(json.toRawUTF8(), json.getNumBytesAsUTF8())))
                     throw std::runtime_error(target.getLastWriteError().toStdString());
-                juce::String error;
                 if (!target.commit(error)) throw std::runtime_error(error.toStdString());
                 return movie::object({{"projectId",target.getProjectId()}});
             },
@@ -1068,6 +1073,27 @@ MainComponent::Result MainComponent::execute(const juce::String& name, const juc
                 if (juce::JSON::toString(document.sequence.toJson()) != juce::JSON::toString(snapshot.toJson()))
                     throw std::runtime_error("The saved snapshot is older than the current edits. Movie remains open; save again.");
                 document.dirty = false;
+                for (auto& media : document.sequence.media) media.catalogued = true;
+            });
+    }
+
+    if (name == "movie.media.refresh")
+    {
+        if (!session.isValid()) return Result::failure("no_project", "Open a shared project first.");
+        auto resolved = std::make_shared<movie::Sequence>(document.sequence);
+        auto target = std::make_shared<creation::assets::ProjectSession>(session);
+        return startJob("refresh-media", [resolved, target](Job& j)
+            {
+                juce::String error;
+                if (!target->refreshManifest(error)) throw std::runtime_error(error.toStdString());
+                const auto warnings = movie::resolveProjectMedia(*target, *resolved, &j.cancel);
+                return movie::object({{"mediaCount", (int)resolved->media.size()}, {"warnings", warnings.joinIntoString("; ")}});
+            }, [this, resolved, target](const juce::var& result)
+            {
+                session = *target;
+                document.sequence.media = resolved->media;
+                changed();
+                if (result["warnings"].toString().isNotEmpty()) lastStatus = result["warnings"].toString();
             });
     }
 
@@ -1110,6 +1136,13 @@ MainComponent::Result MainComponent::execute(const juce::String& name, const juc
                 // 3. Verify VFS stream demuxing directly through custom AVIO
                 auto vfsStream = creation::assets::openVfsEntryStream(projId, logicalPath);
                 movie::MediaReader vfsProbe(std::move(vfsStream), file.getFileName(), movie::MediaReader::Kind::probe, &j.cancel);
+                movie::Media media{mediaId, mediaId, file.getFileName(), logicalPath, vfsProbe.info()};
+                auto asset = movie::describeProjectMedia(media);
+                asset.fileSizeBytes = file.getSize();
+                asset.externalSourcePath = file.getFullPathName();
+                asset.sourceTool = "Media import";
+                workerSession.upsertAssetDescriptor(asset);
+                if (!workerSession.commit(err)) throw std::runtime_error(err.toStdString());
                 j.progress = 1.0;
 
                 return movie::object({
@@ -1130,6 +1163,7 @@ MainComponent::Result MainComponent::execute(const juce::String& name, const juc
                 m.name = res["name"].toString();
                 m.path = res["path"].toString();
                 m.info = movie::MediaInfo::fromJson(res["info"]);
+                m.catalogued = true;
 
                 auto next = document.sequence;
                 next.media.push_back(m);
@@ -1249,7 +1283,7 @@ MainComponent::Result MainComponent::execute(const juce::String& name, const juc
         if (a["clipId"].toString().isNotEmpty())
             selectClip(a["clipId"].toString());
         if (a["assetId"].toString().isNotEmpty())
-            selectMedia(a["assetId"].toString());
+            selectMedia(a["assetId"].toString(), a["versionId"].toString());
         return Result::success(state());
     }
 
@@ -1339,6 +1373,7 @@ void MainComponent::registerCommands()
 
     reg("movie.state.get", "Get Movie State", "Returns sequence, transport, selection, and background job state.",
         Effect::read, schemaObj({}));
+    reg("movie.media.refresh", "Refresh Shared Project Media", "Resolve compatible media from the shared project catalog without importing or duplicating it.", Effect::read, schemaObj({}));
     reg("movie.jobs.get", "Get Background Jobs", "Returns the current or most recent background media job status.",
         Effect::read, schemaObj({}));
     reg("movie.track.list", "List Tracks", "Returns tracks in display order.", Effect::read, schemaObj({}));
@@ -1400,7 +1435,7 @@ void MainComponent::registerCommands()
             { "fpsDen", movie::object({ { "type", "integer" } }) },
             { "discardChanges", movie::object({ { "type", "boolean" } }) }
         }));
-    reg("movie.project.open", "Open Movie Project", "Opens a VFS Movie project in a background job. Wait for completion; a failed open preserves the current document. Unsaved edits require saving or explicit discardChanges.",
+    reg("movie.project.open", "Open Shared Project", "Opens any Suite VFS project and resolves compatible catalog media. An absent Movie sequence starts an empty Movie edit. A failed open preserves the current document. Unsaved edits require saving or explicit discardChanges.",
         Effect::destructive, schemaObj({ { "projectId", movie::object({ { "type", "string" } }) },
             { "discardChanges", movie::object({ { "type", "boolean" } }) } }, { "projectId" }));
     reg("movie.project.save", "Save Movie Project", "Saves the sequence in a background job. Wait for movie.jobs.get to report completed; a failed save keeps the document dirty and the app open.",
@@ -1413,6 +1448,7 @@ void MainComponent::registerCommands()
     reg("movie.timeline.place", "Place Media on Timeline", "Places an imported media asset onto the sequence timeline.",
         Effect::write, schemaObj({
             { "assetId", movie::object({ { "type", "string" } }) },
+            { "versionId", movie::object({ { "type", "string" } }) },
             { "start", movie::object({ { "type", "number" } }) },
             { "duration", movie::object({ { "type", "number" } }) },
             { "sourceIn", movie::object({ { "type", "number" } }) },
@@ -1587,11 +1623,13 @@ void MainComponent::selectClip(const juce::String& id)
         timeline->repaint();
 }
 
-void MainComponent::selectMedia(const juce::String& id)
+void MainComponent::selectMedia(const juce::String& id, const juce::String& version)
 {
     selectedMedia = id;
-    if (const auto* m = document.sequence.findMedia(id))
+    selectedMediaVersion = version;
+    if (const auto* m = document.sequence.findMedia(id, version))
     {
+        selectedMediaVersion = m->versionId;
         movie::Sequence single;
         single.projectId = document.sequence.projectId;
         single.name = m->name;
@@ -1631,6 +1669,7 @@ juce::var MainComponent::state() const
         { "selectedTrack", selectedTrack },
         { "selectedTransition",selectedTransition },
         { "selectedMedia", selectedMedia },
+        { "selectedMediaVersion", selectedMediaVersion },
         { "codecVersion", movie::codecVersion() },
         { "transport", movie::object({
             { "playing", playback.playing() },
@@ -1967,7 +2006,7 @@ void MainComponent::menuItemSelected(int id, int)
         case 7: requestQuit(); break;
         case 10: runUi("movie.timeline.undo"); break;
         case 11: runUi("movie.timeline.redo"); break;
-        case 20: runUi("movie.timeline.place", movie::object({ { "assetId", selectedMedia }, { "trackId", selectedTrack }, { "start", playback.position() } })); break;
+        case 20: runUi("movie.timeline.place", movie::object({ { "assetId", selectedMedia }, { "versionId", selectedMediaVersion }, { "trackId", selectedTrack }, { "start", playback.position() } })); break;
         case 21: titleDialog(); break;
         case 22: runUi("movie.timeline.split", movie::object({ { "clipId", selectedClip }, { "time", playback.position() } })); break;
         case 23: runUi("movie.timeline.remove", movie::object({ { "clipId", selectedClip }, { "ripple", false } })); break;
