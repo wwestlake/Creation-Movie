@@ -32,7 +32,7 @@ async def verify(args):
                 value = json.loads(path.read_text())
                 if predicate(value):
                     return value
-            except (FileNotFoundError, json.JSONDecodeError):
+            except (OSError, json.JSONDecodeError):
                 pass
             if process.poll() is not None:
                 raise RuntimeError("Native fixture exited; inspect fixture.log")

@@ -42,7 +42,13 @@ function Job {
         Start-Sleep -Milliseconds 200
     }while($true)
 }
-function Get-MovieSequence {Invoke-RestMethod "$($agent.baseUrl)/v1/app/sequence" -Headers $headers -TimeoutSec 10}
+function Get-MovieSequence {
+    $sequence=Invoke-RestMethod "$($agent.baseUrl)/v1/app/sequence" -Headers $headers -TimeoutSec 10
+    # Shared catalog enumeration has no ordering contract. Compare every media
+    # field, preserving track/clip order, but canonicalize this identity set.
+    $sequence.media=@($sequence.media|Sort-Object id,versionId)
+    return $sequence
+}
 function Assert([bool]$ok,[string]$reason){if(!$ok){throw $reason}}
 try {
     $original=(Invoke-RestMethod "$($agent.baseUrl)/v1/app/state" -Headers $headers -TimeoutSec 10).projectId
@@ -84,7 +90,9 @@ try {
     $checks.Add('Recording publication participates in normal undo/redo')
     $null=Command 'movie.project.save';Job
     $before=(Get-MovieSequence|ConvertTo-Json -Depth 30 -Compress)
+    Set-Content (Join-Path $output 'sequence-before.json') $before
     $null=Command 'movie.project.open' @{projectId=$project};Job
+    Get-MovieSequence|ConvertTo-Json -Depth 30 -Compress|Set-Content (Join-Path $output 'sequence-after.json')
     Assert ((Get-MovieSequence|ConvertTo-Json -Depth 30 -Compress) -eq $before) 'Save/reopen changed capture document'
     $checks.Add('Save/reopen preserves captured media, assignments and precise placements')
     $take|ConvertTo-Json -Depth 20|Set-Content (Join-Path $output 'take-results.json')

@@ -60,7 +60,23 @@ struct WebCamCapture::Impl : std::enable_shared_from_this<WebCamCapture::Impl> {
         VisualPreview preview;uint32_t lastRtp=0,srRtp=0,ssrc=0,srSsrc=0;int64_t extended=0;double srWall=0;bool anchored=false,haveRtp=false;
         std::map<uint16_t,Bytes> fragments;uint32_t frameTimestamp=0;int first=-1,last=-1;size_t fragmentBytes=0;
         juce::int64 lastArrival=0,sequence=0,audioEnd=-1;int payload=-1,rotationExtension=-1,rotation=0;
-        void clear(){avcodec_free_context(&decoder);sws_freeContext(scale);scale=nullptr;swr_free(&resample);fragments.clear();fragmentBytes=0;first=last=-1;anchored=haveRtp=false;preview={};sequence=lastArrival=extended=0;audioEnd=-1;payload=rotationExtension=-1;rotation=0;ssrc=srSsrc=0;lastRtp=srRtp=frameTimestamp=0;srWall=0;}
+        juce::int64 mappedPosition=-1,mappedHost=0;
+        juce::int64 mapHost(juce::int64 position,int rate,juce::int64 target,juce::int64& error)
+        {
+            auto result=target;
+            if(mappedPosition>=0){
+                const auto elapsed=(position-mappedPosition)*10000000/rate;
+                const auto predicted=mappedHost+elapsed;
+                // Clock probes and successive RTCP reports refine an estimate;
+                // they must not jump a running recording backwards. Follow RTP
+                // progression and slew the estimate at no more than 1000 ppm.
+                const auto limit=std::max<juce::int64>(1,elapsed/1000);
+                result=predicted+juce::jlimit(-limit,limit,target-predicted);
+                error+=std::abs(target-result);
+            }
+            mappedPosition=position;mappedHost=result;return result;
+        }
+        void clear(){avcodec_free_context(&decoder);sws_freeContext(scale);scale=nullptr;swr_free(&resample);fragments.clear();fragmentBytes=0;first=last=-1;anchored=haveRtp=false;preview={};sequence=lastArrival=extended=0;audioEnd=mappedPosition=-1;mappedHost=0;payload=rotationExtension=-1;rotation=0;ssrc=srSsrc=0;lastRtp=srRtp=frameTimestamp=0;srWall=0;}
         ~Stream(){clear();}
     } streams[2];
     Impl(){worker=std::thread([this]{run();});}
@@ -170,15 +186,21 @@ struct WebCamCapture::Impl : std::enable_shared_from_this<WebCamCapture::Impl> {
     }
     void decode(int which,const Bytes& data,uint32_t timestamp,juce::int64 arrival){
         auto& s=streams[which];if(!s.decoder){const auto* codec=avcodec_find_decoder(which==0?AV_CODEC_ID_VP8:AV_CODEC_ID_OPUS);if(!codec)throw std::runtime_error("VP8/Opus decoder unavailable");s.decoder=avcodec_alloc_context3(codec);s.decoder->thread_count=1;s.decoder->max_pixels=3840*2160;if(which==1){s.decoder->sample_rate=48000;av_channel_layout_default(&s.decoder->ch_layout,2);}if(avcodec_open2(s.decoder,codec,nullptr)<0)throw std::runtime_error("Cannot open WebCam decoder");}
-        if(!s.haveRtp){s.lastRtp=timestamp;s.extended=timestamp;s.haveRtp=true;}else{s.extended+=(int32_t)(timestamp-s.lastRtp);s.lastRtp=timestamp;}
+        if(!s.haveRtp){s.lastRtp=timestamp;s.extended=timestamp;s.haveRtp=true;}else{
+            const auto advance=(int32_t)(timestamp-s.lastRtp);
+            if(advance<=0){++s.preview.discontinuities;return;}
+            s.extended+=advance;s.lastRtp=timestamp;
+        }
         const int rate=which==0?90000:48000;const double wall=s.srWall+double((int32_t)(timestamp-s.srRtp))*10000000/rate;
-        const auto host=(juce::int64)(wall-wallOffset+phoneToHost);
+        auto host=(juce::int64)(wall-wallOffset+phoneToHost);
         const bool timing=state=="connected"&&localTransport&&s.anchored&&clockSamples>=3&&uncertainty<500000&&std::abs(host-arrival)<10000000;
+        auto sampleUncertainty=uncertainty;
+        if(timing)host=s.mapHost(s.extended,rate,host,sampleUncertainty);
         AVPacket* packet=av_packet_alloc();std::unique_ptr<AVFrame,void(*)(AVFrame*)> frame(av_frame_alloc(),[](AVFrame* f){av_frame_free(&f);});if(!packet||!frame){av_packet_free(&packet);throw std::bad_alloc();}
         if(av_new_packet(packet,(int)data.size())<0){av_packet_free(&packet);throw std::bad_alloc();}std::memcpy(packet->data,data.data(),data.size());
         const int result=avcodec_send_packet(s.decoder,packet);av_packet_free(&packet);if(result<0){++s.preview.discontinuities;return;}
         while(avcodec_receive_frame(s.decoder,frame.get())>=0){
-            auto sample=std::make_shared<CaptureSample>();sample->epoch=session;sample->clock="webcam-rtp-"+juce::String(rate)+":"+juce::String(s.ssrc);sample->sourceTime=s.extended*10000000/rate;sample->hostTime=host;sample->position=s.extended;sample->sequence=++s.sequence;sample->uncertainty100ns=uncertainty;
+            auto sample=std::make_shared<CaptureSample>();sample->epoch=session;sample->clock="webcam-rtp-"+juce::String(rate)+":"+juce::String(s.ssrc);sample->sourceTime=s.extended*10000000/rate;sample->hostTime=host;sample->position=s.extended;sample->sequence=++s.sequence;sample->uncertainty100ns=sampleUncertainty;
             if(which==0){if(frame->width<=0||frame->height<=0||frame->width>3840||frame->height>2160){throw std::runtime_error("WebCam dimensions exceed receiver limit");}sample->image=juce::Image(juce::Image::ARGB,frame->width,frame->height,true);{juce::Image::BitmapData bitmap(sample->image,juce::Image::BitmapData::writeOnly);uint8_t* dest[]={bitmap.data};int strides[]={bitmap.lineStride};s.scale=sws_getCachedContext(s.scale,frame->width,frame->height,(AVPixelFormat)frame->format,frame->width,frame->height,AV_PIX_FMT_BGRA,SWS_BILINEAR,nullptr,nullptr,nullptr);if(!s.scale)throw std::runtime_error("WebCam color conversion failed");sws_scale(s.scale,frame->data,frame->linesize,0,frame->height,dest,strides);}if(s.rotation){const auto original=sample->image;const int w=original.getWidth(),h=original.getHeight();sample->image=juce::Image(juce::Image::ARGB,s.rotation%2?h:w,s.rotation%2?w:h,true);juce::Graphics graphics(sample->image);const auto transform=s.rotation==1?juce::AffineTransform(0,-1,(float)h,1,0,0):s.rotation==2?juce::AffineTransform(-1,0,(float)w,0,-1,(float)h):juce::AffineTransform(0,1,0,-1,0,(float)w);graphics.drawImageTransformed(original,transform);}s.preview.image=sample->image;++s.preview.frameNumber;s.preview.format=object({{"width",sample->image.getWidth()},{"height",sample->image.getHeight()},{"fpsNum",30},{"fpsDen",1}});}
             else {AVChannelLayout stereo=AV_CHANNEL_LAYOUT_STEREO;if(!s.resample){if(swr_alloc_set_opts2(&s.resample,&stereo,AV_SAMPLE_FMT_FLT,48000,&frame->ch_layout,(AVSampleFormat)frame->format,frame->sample_rate,0,nullptr)<0||swr_init(s.resample)<0)throw std::runtime_error("WebCam audio conversion failed");}auto audio=std::make_shared<std::vector<float>>(8192*2);uint8_t* dest[]={(uint8_t*)audio->data()};const int n=swr_convert(s.resample,dest,8192,(const uint8_t**)frame->extended_data,frame->nb_samples);if(n<0)throw std::runtime_error("WebCam audio decode failed");audio->resize(n*2);for(auto& value:*audio)if(!std::isfinite(value))value=0;sample->audio=audio;sample->frames=n;sample->rate=48000;sample->channels=2;s.preview.sampleCount+=n;s.preview.samplePosition=s.extended;s.preview.format=object({{"sampleRate",48000},{"channels",2}});}
             s.lastArrival=arrival;s.preview.timestamp100ns=timing?host:0;s.preview.state=timing?"live":"starting";s.preview.message=timing?"Authenticated WebCam / RTP and clock probes mapped to Movie time.":"Preview available; waiting for sender reports and clock synchronization.";
@@ -244,6 +266,15 @@ void WebCamCapture::renderAudio(float*const* output,int channels,int frames,doub
 void WebCamCapture::expireInvitationForTest(){std::lock_guard lock(impl->mutex);impl->expires=0;}
 void WebCamCapture::verifyTimingBoundaries(){
     auto require=[](bool condition,const char* message){if(!condition)throw std::runtime_error(message);};
+    {
+        Impl::Stream stream;juce::int64 error=20000;
+        const auto first=stream.mapHost(0,48000,10000000,error);
+        const auto second=stream.mapHost(960,48000,9500000,error);
+        require(second>first&&second-first>=199800,"Updated clock anchor moved audio backwards");
+        require(error>=719800,"Clock slew residual was omitted from uncertainty");
+        const auto third=stream.mapHost(1920,48000,12000000,error);
+        require(third-second<=200200,"Forward clock refinement jumped the recording timeline");
+    }
     Impl clock;clock.session="test-generation";
     const juce::int64 t0=100000000000LL,p1=20000000000000LL,p2=p1+2000000;
     clock.lastProbe=t0;
@@ -264,6 +295,8 @@ void WebCamCapture::verifyTimingBoundaries(){
     {std::lock_guard lock(clock.mutex);
         clock.decode(1,Bytes{0xf8,0xff,0xfe},0xfffffff0,captureHostTime());
         const auto first=clock.streams[1].extended;
+        clock.decode(1,Bytes{0xf8,0xff,0xfe},0xffffffe0,captureHostTime());
+        require(clock.streams[1].extended==first,"Late audio packet rewound the decoder clock");
         clock.decode(1,Bytes{0xf8,0xff,0xfe},944,captureHostTime());
         require(clock.streams[1].extended-first==960,"RTP timestamp wrap lost audio sample progression");
         require(clock.streams[1].preview.state!="live","Missing source anchor incorrectly became recording-ready");
