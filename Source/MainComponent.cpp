@@ -1,6 +1,7 @@
 #include "MainComponent.h"
 #include "MovieProjectMedia.h"
 #include "MovieWebCamPairing.h"
+#include "MovieCaptureInputs.h"
 #if JUCE_DEBUG
 #include "MovieRecordingWriter.h"
 #endif
@@ -207,10 +208,25 @@ public:
     Monitor(MainComponent& o, movie::Playback& p, bool isSourceMonitor)
         : owner(o), player(p), sourceMode(isSourceMonitor)
     {
+        if(!sourceMode)
+        {
+            inputChoice.setName("Central viewer source");
+            inputChoice.setTooltip("Monitor one input or review the timeline. This never changes which inputs are recorded.");
+            inputChoice.onChange=[this]
+            {
+                const int index=inputChoice.getSelectedId()-2;
+                owner.monitorCaptureInput(juce::isPositiveAndBelow(index,(int)inputTracks.size())?inputTracks[(size_t)index]:juce::String());
+            };
+            addInput.setName("Add recording input");
+            addInput.onClick=[this]{owner.showCaptureInputs(&addInput);};
+            recordInputs.onClick=[this]{owner.runUi(owner.recording.active()?"movie.recording.stop":"movie.recording.start");};
+            addAndMakeVisible(inputChoice);addAndMakeVisible(addInput);addAndMakeVisible(recordInputs);
+        }
         playBtn.onClick = [this]
         {
+            if(!sourceMode && owner.monitoredCaptureTrack.isNotEmpty()){owner.monitorCaptureInput({});return;}
             if(sourceMode && owner.liveSourceSelected())
-            {const auto& s=owner.document.sequence;const auto& track=s.tracks[(size_t)s.findTrack(owner.selectedTrack)];owner.runUi("movie.track.preferences",movie::object({{"trackId",track.id},{"monitoring",!track.monitoring}}));return;}
+            {owner.monitorCaptureInput(owner.selectedTrack);return;}
             if (sourceMode)
                 player.play(! player.playing());
             else
@@ -218,8 +234,9 @@ public:
         };
         stopBtn.onClick = [this]
         {
+            if(!sourceMode && owner.recording.active()){owner.runUi("movie.recording.stop");return;}
             if(sourceMode && owner.liveSourceSelected())
-            {owner.runUi("movie.track.preferences",movie::object({{"trackId",owner.selectedTrack},{"monitoring",false}}));return;}
+            {owner.monitorCaptureInput({});return;}
             if (sourceMode)
             {
                 player.play(false);
@@ -260,27 +277,62 @@ public:
         addAndMakeVisible(stepFwdBtn);
     }
 
+    void refreshInputs()
+    {
+        if(sourceMode){playBtn.setButtonText(owner.liveSourceSelected()?"View":"Play");return;}
+        const auto& sequence=owner.document.sequence;
+        if(sequence.findTrack(owner.monitoredCaptureTrack)<0)owner.monitoredCaptureTrack={};
+        if(owner.viewerFollowsInputs && owner.monitoredCaptureTrack.isEmpty())
+            for(const auto& track:sequence.tracks)if(movie::recordsCaptureInput(track) && track.type=="video"){owner.monitoredCaptureTrack=track.id;break;}
+        juce::String stamp=owner.monitoredCaptureTrack;
+        int count=0;
+        for(const auto& track:sequence.tracks)if(movie::isCaptureInput(track))
+        {stamp+=track.id+track.name+(track.enabled?"1":"0");if(track.enabled)++count;}
+        if(stamp!=inputStamp)
+        {
+            inputStamp=stamp;inputTracks.clear();inputChoice.clear(juce::dontSendNotification);
+            inputChoice.addItem("Timeline review",1);
+            for(const auto& track:sequence.tracks)if(movie::isCaptureInput(track))
+            {
+                inputTracks.push_back(track.id);
+                const int id=(int)inputTracks.size()+1;
+                inputChoice.addItem(track.name+(track.enabled?" / record enabled":" / monitor only"),id);
+                if(track.id==owner.monitoredCaptureTrack)inputChoice.setSelectedId(id,juce::dontSendNotification);
+            }
+            if(inputChoice.getSelectedId()==0)inputChoice.setSelectedId(1,juce::dontSendNotification);
+        }
+        const bool recording=owner.recording.active();
+        addInput.setEnabled(!recording && owner.job->status!="running");
+        recordInputs.setButtonText(recording?"Stop recording":"Record "+juce::String(count)+" inputs");
+        recordInputs.setEnabled(recording || (count>0 && owner.job->status!="running"));
+        playBtn.setButtonText(owner.monitoredCaptureTrack.isEmpty()?"Play":"Review");
+        stepBackBtn.setEnabled(owner.monitoredCaptureTrack.isEmpty());stepFwdBtn.setEnabled(owner.monitoredCaptureTrack.isEmpty());
+        repaint();
+    }
+
     void paint(juce::Graphics& g) override
     {
         g.fillAll(juce::Colour(0xff0b0f17));
         auto bounds = getLocalBounds().reduced(8);
+        if(!sourceMode)bounds.removeFromTop(36);
         auto controls = bounds.removeFromBottom(32);
         auto scrubBar = bounds.removeFromBottom(16).reduced(2, 4);
 
-        const bool live=sourceMode && owner.liveSourceSelected();
-        const auto capture=live?owner.visualCapture.preview(owner.selectedTrack):movie::VisualPreview{};
-        const auto frame = live?capture.image:player.preview();
+        const auto trackId=sourceMode?owner.selectedTrack:owner.monitoredCaptureTrack;
+        const bool live=sourceMode?owner.liveSourceSelected():trackId.isNotEmpty();
+        const auto capture=live?owner.visualCapture.preview(trackId):movie::VisualPreview{};
+        const auto frame = live?(capture.state=="live" || capture.state=="starting"?capture.image:juce::Image()):player.preview();
         if (frame.isValid())
         {
             g.drawImageWithin(frame, bounds.getX(), bounds.getY(), bounds.getWidth(), bounds.getHeight(),
                               juce::RectanglePlacement::centred, false);
         }
-        else if(!live || capture.sampleCount==0)
+        else if(!live || capture.sampleCount==0 || capture.state!="live")
         {
             g.setColour(juce::Colours::white.withAlpha(0.35f));
             g.setFont(juce::FontOptions(14.0f));
             g.drawText(live?"Capture: "+capture.state+" — "+capture.message:sourceMode ? "Source Monitor: Select a media asset or capture track"
-                                  : "Program Monitor: Place media on timeline to preview",
+                                  : "Add input... to monitor a camera, phone, screen or microphone; Timeline review plays edited media",
                        bounds, juce::Justification::centred);
         }
 
@@ -294,13 +346,16 @@ public:
         }
         // Overlay badge
         g.setColour(juce::Colours::black.withAlpha(0.6f));
-        g.fillRoundedRectangle((float) bounds.getX() + 8.0f, (float) bounds.getY() + 8.0f, 220.0f, 24.0f, 4.0f);
+        const int badgeWidth=juce::jmin(bounds.getWidth()-16,460);
+        g.fillRoundedRectangle((float) bounds.getX() + 8.0f, (float) bounds.getY() + 8.0f, (float)badgeWidth, 24.0f, 4.0f);
         g.setColour(juce::Colours::white.withAlpha(0.9f));
         g.setFont(juce::FontOptions(12.0f, juce::Font::bold));
         const auto& seq = owner.document.sequence;
         const auto tc = formatTimecode(player.position(), seq.fpsNum, seq.fpsDen);
-        g.drawText(live?"LIVE / "+capture.state:(sourceMode ? "SRC  " : "PGM  ") + tc,
-                   bounds.getX() + 14, bounds.getY() + 8, 208, 24, juce::Justification::centredLeft);
+        const int trackIndex=seq.findTrack(trackId);
+        const auto inputName=trackIndex>=0?seq.tracks[(size_t)trackIndex].name:juce::String();
+        g.drawText(live?"MONITOR / "+capture.state+" / "+inputName:(sourceMode ? "SRC  " : "TIMELINE  ") + tc,
+                   bounds.getX() + 14, bounds.getY() + 8, badgeWidth-12, 24, juce::Justification::centredLeft);
 
         // Scrub bar
         g.setColour(juce::Colour(0xff1e293b));
@@ -320,13 +375,20 @@ public:
             g.setColour(creation_movie::branding::accentColour());
             g.fillRoundedRectangle(filled.toFloat(), 3.0f);
         }
-        playBtn.setButtonText(live?(capture.state=="stopped"?"Preview":"Pause preview"):player.playing() ? "Pause" : "Play");
+        playBtn.setButtonText(live?(sourceMode?"View":"Review"):player.playing() ? "Pause" : "Play");
         stepBackBtn.setEnabled(!live);stepFwdBtn.setEnabled(!live);
         juce::ignoreUnused(controls);
     }
 
     void resized() override
     {
+        if(!sourceMode)
+        {
+            auto top=getLocalBounds().reduced(8).removeFromTop(28);
+            recordInputs.setBounds(top.removeFromRight(140));top.removeFromRight(6);
+            addInput.setBounds(top.removeFromRight(126));top.removeFromRight(6);
+            inputChoice.setBounds(top);
+        }
         auto row = getLocalBounds().reduced(8).removeFromBottom(28);
         stepBackBtn.setBounds(row.removeFromLeft(54));
         row.removeFromLeft(4);
@@ -343,6 +405,7 @@ public:
 private:
     void scrubAt(const juce::MouseEvent& e)
     {
+        if(!sourceMode && owner.monitoredCaptureTrack.isNotEmpty())return;
         if(sourceMode && owner.liveSourceSelected())return;
         auto bounds = getLocalBounds().reduced(8);
         bounds.removeFromBottom(32);
@@ -372,6 +435,10 @@ private:
     MainComponent& owner;
     movie::Playback& player;
     bool sourceMode = false;
+    juce::ComboBox inputChoice;
+    juce::TextButton addInput{"Add input..."},recordInputs{"Record inputs"};
+    std::vector<juce::String> inputTracks;
+    juce::String inputStamp{"uninitialized"};
     juce::TextButton playBtn { "Play" }, stopBtn { "Stop" }, stepBackBtn { "< 1f" }, stepFwdBtn { "1f >" };
 };
 
@@ -633,7 +700,7 @@ MainComponent::MainComponent()
     using Zone = CreationDock::DockTargetZone;
     dock->registerPanel("library", "Media Library", std::make_unique<NonOwningHost>(*library), Zone::Left);
     dock->registerPanel("source", "Source Monitor", std::make_unique<NonOwningHost>(*sourceMonitor), Zone::CenterTab);
-    dock->registerPanel("program", "Program Monitor", std::make_unique<NonOwningHost>(*monitor), Zone::CenterTab);
+    dock->registerPanel("program", "Central Viewer", std::make_unique<NonOwningHost>(*monitor), Zone::CenterTab);
     dock->registerPanel("timeline", "Timeline", std::make_unique<NonOwningHost>(*timeline), Zone::Bottom);
     dock->registerPanel("track-inspector", "Track Inspector", std::make_unique<NonOwningHost>(*trackInspector), Zone::Right);
     dock->registerPanel("transitions","Transitions",std::make_unique<NonOwningHost>(*transitionPanel),Zone::Right);
@@ -920,6 +987,27 @@ MainComponent::Result MainComponent::startJob(const juce::String& type,
 
 MainComponent::Result MainComponent::execute(const juce::String& name, const juce::var& a)
 {
+#if JUCE_DEBUG
+    if(name=="movie.debug.viewer.image")
+    {
+        if(!monitor || monitor->getWidth()<1 || monitor->getHeight()<1)
+            return Result::failure("viewer_hidden","Open Central Viewer before taking its validation snapshot.");
+        const double scale=std::min({1.0,1280.0/monitor->getWidth(),720.0/monitor->getHeight()});
+        const auto image=monitor->createComponentSnapshot(monitor->getLocalBounds(),false,(float)scale);
+        juce::MemoryOutputStream png;
+        if(!juce::PNGImageFormat().writeImageToStream(image,png))return Result::failure("snapshot_failed","Could not render Central Viewer.");
+        return Result::success(movie::object({{"png",juce::Base64::toBase64(png.getData(),png.getDataSize())},
+            {"width",image.getWidth()},{"height",image.getHeight()},{"showing",monitor->isShowing()}}));
+    }
+#endif
+    if(name=="movie.capture.monitor.status")return Result::success(captureViewerStatus());
+    if(name=="movie.capture.monitor")
+    {
+        const auto id=a["trackId"].toString();const int index=document.sequence.findTrack(id);
+        if(id.isNotEmpty() && (index<0 || !movie::isCaptureInput(document.sequence.tracks[(size_t)index])))
+            return Result::failure("unknown_input","Choose a capture track, or an empty trackId for timeline review.");
+        monitorCaptureInput(id);return Result::success(captureViewerStatus());
+    }
     if (name == "movie.state.get")
         return Result::success(state());
     if (name == "movie.jobs.get")
@@ -984,6 +1072,9 @@ MainComponent::Result MainComponent::execute(const juce::String& name, const juc
         return Result::success(jobs());
     }
 
+    if(recording.active() && ((name.startsWith("movie.track.") && name!="movie.track.preferences")
+        || name=="movie.capture.add" || name=="movie.timeline.undo" || name=="movie.timeline.redo"))
+        return Result::failure("recording_active","Finalize this take before changing recording inputs. Central viewer monitoring remains available.");
     const bool transport = name.startsWith("movie.transport.") || name == "movie.select";
     if (job && job->status == "running" && ! transport)
         return Result::failure("job_busy", "Wait for the background job to finish or cancel it. Transport and state inspection remain available.");
@@ -1179,6 +1270,40 @@ MainComponent::Result MainComponent::execute(const juce::String& name, const juc
                 document.restore(next.toJson());
                 selectMedia(m.id);
             });
+    }
+
+    if(name=="movie.capture.add")
+    {
+        const auto id=a["sourceId"].toString();
+        for(const auto& track:document.sequence.tracks)if(movie::isCaptureInput(track) && track.source["identity"].toString()==id)
+        {monitorCaptureInput(track.id);return Result::success(track.toJson());}
+        for(const auto& source:visualCapture.sources())if(source.id==id)
+        {
+            if(source.kind!="camera" && source.kind!="microphone" && source.kind!="display" && source.kind!="window")
+                return Result::failure("unsupported_input","This source cannot be recorded.");
+            auto format=a["settings"].isObject()?a["settings"].clone():movie::object({});
+            if(!a["settings"].isObject() && !source.formats.isEmpty())
+            {
+                double best=1.0e30;
+                for(const auto& candidate:source.formats)
+                {
+                    const auto fps=(double)candidate["fpsNum"]/std::max(1,(int)candidate["fpsDen"]);
+                    const double score=source.kind=="microphone"
+                        ?std::abs((int)candidate["sampleRate"]-48000)/48000.0+std::abs((int)candidate["channels"]-2)
+                        :std::abs((double)candidate["width"]*(int)candidate["height"]-1280.0*720)/(1280.0*720)+std::abs(fps-30)/30;
+                    if(score<best){best=score;format=candidate.clone();}
+                }
+            }
+            const auto error=visualCapture.validate(source.id,source.kind,format);
+            if(error.isNotEmpty())return Result::failure("unavailable_source",error);
+            juce::String problem;
+            if(!document.edit("track.create",movie::object({{"type",source.kind=="microphone"?"audio":"video"},
+                {"name",source.name.substring(0,256)},{"source",movie::object({{"category",source.kind},{"identity",source.id},{"settings",format}})}}),problem))
+                return Result::failure("invalid_input",problem);
+            const auto track=document.sequence.tracks.back();monitorCaptureInput(track.id);
+            return Result::success(track.toJson());
+        }
+        return Result::failure("unavailable_source","Refresh inputs and select an available source.");
     }
 
     if(name.startsWith("movie.automation.") || name.startsWith("movie.effect."))
@@ -1391,6 +1516,14 @@ void MainComponent::registerCommands()
             juce::String(action)=="start" || juce::String(action)=="stop" || juce::String(action)=="recover"?Effect::write:Effect::read,
             schemaObj({{"position",movie::object({{"type","number"}})},{"takeId",movie::object({{"type","string"}})}}));
     reg("movie.capture.sources","Capture Sources","Current display/window/camera/microphone catalog with supported device formats. Assign a returned ID through movie.track.source on an existing compatible video/audio track.",Effect::read,schemaObj({}));
+    reg("movie.capture.add","Add recording input","Adds a discovered input as its own enabled recording track and monitors it in the central viewer. Existing matching inputs are reused.",Effect::write,
+        schemaObj({{"sourceId",movie::object({{"type","string"}})},{"settings",movie::object({{"type","object"}})}},{"sourceId"}));
+    reg("movie.capture.monitor","Monitor capture input","Changes only the central viewer. Does not modify source configuration, take membership or recordings. Empty trackId selects timeline review.",Effect::read,
+        schemaObj({{"trackId",movie::object({{"type","string"}})}},{"trackId"}));
+    reg("movie.capture.monitor.status","Capture viewer status","Reports the central viewer selection, visible frame, source activity and recording participation.",Effect::read,schemaObj({}));
+#if JUCE_DEBUG
+    reg("movie.debug.viewer.image","Render viewer validation image","Debug-only bounded PNG of the actual Central Viewer component, including its input controls and rendered source.",Effect::read,schemaObj({}));
+#endif
     reg("movie.webcam.invite","Pair Djehuti WebCam","Automatically discover active local networks and return a private one-use invitation (120 seconds). Address is an optional diagnostic override. Keep the invitation out of logs and project data.",Effect::external,schemaObj({{"address",movie::object({{"type","string"}})},{"port",movie::object({{"type","integer"}})}}));
     reg("movie.webcam.stop","Disconnect WebCam","Revoke invitation and release remote transport. Active remote recordings retain their usable prefix.",Effect::write,schemaObj({}));
     reg("movie.webcam.status","WebCam Status","Connection, timing readiness and receive activity; never returns invitation credentials.",Effect::read,schemaObj({}));
@@ -1428,7 +1561,7 @@ void MainComponent::registerCommands()
     });
     for(const auto* operation:{"create","remove","rename","reorder","type","enabled","source","preferences","automation"})
         reg("movie.track."+juce::String(operation),"Track "+juce::String(operation),
-            "Undoable track document operation. Track arming controls recording participation; monitoring remains independent. See docs/TRACK_DOCUMENT.md.",
+            "Undoable track document operation. Every enabled capture input records independently; central viewer selection is independent. See docs/TRACK_DOCUMENT.md.",
             juce::String(operation)=="remove"?Effect::destructive:Effect::write,trackSchema);
     reg("movie.app.close", "Close Movie", "Closes Movie after saving dirty edits. Refuses while a job is active; a failed save keeps the app open and the document dirty.",
         Effect::external, schemaObj({}));
@@ -1895,6 +2028,7 @@ void MainComponent::timerCallback()
         :connectionState=="pairing"?juce::String("Waiting for phone")
         :connectionState=="negotiating"?juce::String("Connecting")
         :connectionState=="stopped"?juce::String("Not connected")
+        :connectionState=="disconnected"?juce::String("Disconnected — Pair Phone to reconnect")
         :juce::String("Failed: ")+connection["error"].toString();
     phoneStatus.setText("Phone: "+description,juce::dontSendNotification);phoneStatus.setTooltip(description);
     disconnectPhoneButton.setEnabled(connectionState!="stopped"&&connectionState.isNotEmpty());
@@ -1938,6 +2072,51 @@ void MainComponent::pollRecording()
     if(quitAfterRecording && !recording.active() && job->status!="running"){quitAfterRecording=false;requestQuit();}
 }
 
+void MainComponent::monitorCaptureInput(const juce::String& track)
+{
+    monitoredCaptureTrack=track;viewerFollowsInputs=track.isNotEmpty();
+    if(monitoredCaptureTrack.isEmpty())playback.requestPreview(playback.position());
+    syncVisualCapture();
+    if(dock)dock->activatePanel("program");
+}
+
+juce::var MainComponent::captureViewerStatus() const
+{
+    const int index=document.sequence.findTrack(monitoredCaptureTrack);
+    const auto preview=index>=0?visualCapture.preview(monitoredCaptureTrack):movie::VisualPreview{};
+    const auto* track=index>=0?&document.sequence.tracks[(size_t)index]:nullptr;
+    return movie::object({{"mode",track?"capture":"timeline"},{"trackId",monitoredCaptureTrack},
+        {"sourceId",track?track->source["identity"]:juce::var()},{"name",track?track->name:juce::String()},
+        {"state",preview.state},{"message",preview.message},
+        {"hasImage",preview.image.isValid() && (preview.state=="live" || preview.state=="starting")},
+        {"width",preview.image.getWidth()},{"height",preview.image.getHeight()},
+        {"frames",preview.frameNumber},{"samples",preview.sampleCount},{"timestamp100ns",preview.timestamp100ns},
+        {"recordEnabled",track && movie::recordsCaptureInput(*track)},{"recording",recording.active()}});
+}
+
+void MainComponent::showCaptureInputs(juce::Component* anchor)
+{
+    juce::PopupMenu menu;std::vector<juce::String> ids;
+    const auto sources=visualCapture.sources();
+    for(const auto* kind:{"camera","display","window","microphone"})
+    {
+        juce::PopupMenu group;
+        for(const auto& source:sources)if(source.kind==kind)
+        {ids.push_back(source.id);group.addItem((int)ids.size(),source.name.substring(0,160));}
+        if(group.getNumItems()>0)menu.addSubMenu(juce::String(kind).toUpperCase(),group);
+    }
+    if(ids.empty())menu.addItem(1,"No inputs available — connect a device or Pair Phone",false);
+    menu.addSeparator();menu.addItem(10000,"Refresh inputs");
+    const juce::Component::SafePointer<MainComponent> safe(this);
+    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(anchor),[safe,ids](int result)
+    {
+        if(!safe)return;
+        if(result==10000){safe->visualCapture.refresh();return;}
+        if(juce::isPositiveAndBelow(result-1,(int)ids.size()))
+            safe->runUi("movie.capture.add",movie::object({{"sourceId",ids[(size_t)result-1]}}));
+    });
+}
+
 bool MainComponent::liveSourceSelected() const
 {
     if(selectedMedia.isNotEmpty())return false;
@@ -1946,9 +2125,12 @@ bool MainComponent::liveSourceSelected() const
 }
 void MainComponent::syncVisualCapture()
 {
+    if(monitor)monitor->refreshInputs();
+    if(sourceMonitor)sourceMonitor->refreshInputs();
     std::vector<movie::VisualBinding> bindings;
     for(const auto& track:document.sequence.tracks)
-    {const auto category=track.source["category"].toString();if((track.type=="video" && (category=="display" || category=="window" || category=="camera")) || (track.type=="audio" && category=="microphone"))bindings.push_back({track.id,track.source["identity"].toString(),track.enabled && (category=="microphone" || track.monitoring),track.source["settings"].clone(),track.monitoring});}
+        if(movie::isCaptureInput(track))bindings.push_back({track.id,track.source["identity"].toString(),
+            track.enabled || track.id==monitoredCaptureTrack,track.source["settings"].clone(),track.monitoring && track.enabled});
     visualCapture.setBindings(std::move(bindings));
     if(trackInspector)trackInspector->refreshCaptureChoices();
     if(liveSourceSelected() && sourceMonitor)sourceMonitor->repaint();
@@ -1992,7 +2174,7 @@ juce::PopupMenu MainComponent::getMenuForIndex(int, const juce::String& menuName
     {
         m.addItem(30, "Media Library");
         m.addItem(31, "Source Monitor");
-        m.addItem(32, "Program Monitor");
+        m.addItem(32, "Central Viewer");
         m.addItem(33, "Timeline");
         m.addItem(34, "Inspector");
         m.addItem(35, "Virtual Engineer");

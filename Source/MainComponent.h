@@ -21,6 +21,9 @@ public:
 private:
     void showPhonePairing();
     void disconnectPhone();
+    void showCaptureInputs(juce::Component*);
+    void monitorCaptureInput(const juce::String&);
+    juce::var captureViewerStatus() const;
     class Library;class Monitor;class Timeline;class Inspector;class TrackInspector;class EffectsPanel;class AutomationEditor;class TransitionPanel;
     struct Job
     {
@@ -84,6 +87,8 @@ private:
     std::unique_ptr<juce::FileChooser> chooser;
     std::unique_ptr<juce::DocumentWindow> settingsWindow,helpWindow,phonePairingWindow;
     juce::String selectedClip,selectedMedia,selectedMediaVersion,selectedTrack,selectedTransition,lastStatus;
+    juce::String monitoredCaptureTrack;
+    bool viewerFollowsInputs=true;
     double visibleStart=0,pixelsPerSecond=35,lastPreviewTime=-1;
     std::shared_ptr<Job> job=std::make_shared<Job>();std::thread worker;
     bool closing=false,quitAfterSave=false;int autosaveTicks=0;

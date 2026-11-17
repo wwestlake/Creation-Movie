@@ -115,7 +115,10 @@ private:
         const int i=owner.document.sequence.findTrack(owner.selectedTrack);if(i<0)return;
         const auto& t=owner.document.sequence.tracks[(size_t)i];const bool av=t.type=="video" || t.type=="audio";
         row(nameLabel,18);row(name);row(typeLabel,18);row(type);row(enabled);
-        armed.setVisible(av);monitor.setVisible(av);if(av){row(armed);row(monitor);}
+        armed.setVisible(false);
+        enabled.setButtonText(movie::isCaptureInput(t)?"Recording input enabled":"Enabled");
+        const bool listen=t.type=="audio" && t.source["category"].toString()=="microphone";
+        monitor.setVisible(listen);if(listen)row(monitor);
         row(heightLabel,18);row(height);row(effects);
         const bool sources=av || t.type=="image";
         sourceLabel.setVisible(sources);category.setVisible(sources);applySource.setVisible(sources);clearSource.setVisible(sources);
@@ -136,7 +139,7 @@ private:
         if(videoSettings){row(widthLabel,18);row(width);row(pixelsLabel,18);row(pixels);row(fpsLabel,18);row(fps);}
         if(audioSettings){row(rateLabel,18);row(rate);row(channelsLabel,18);row(channels);}
         if(sources){row(applySource);row(clearSource);}
-        note.setText(device?"Select a supported device format, then Apply Source. Microphone levels run while the track is enabled. Listening is off for new assignments: use headphones to avoid speaker feedback. Shared tracks must request compatible formats. Armed tracks participate in coordinated recording.":visual?"Apply a source to preview it in Source Monitor. Live preview starts on assignment; uncheck Live capture preview to stop. Tracks sharing a source use one acquisition. Window selections must be renewed after restarting Movie. Armed tracks participate in coordinated recording.":live?"Configuration only. No live device discovery, capture or monitoring is active.":t.type=="effects"?"Effects-track routing is undefined. Use effects on a video, audio or image track.":"Source changes keep existing clips. Arm selects this track for coordinated recording.",juce::dontSendNotification);
+        note.setText(visual?"Every enabled capture input records independently on its own synchronized track. Select the input in Central Viewer to monitor it; changing the viewer never changes the recordings. Microphone listening is optional: use headphones. Window inputs must be selected again after restarting Movie.":live?"Configuration only. This source type has no active capture implementation.":t.type=="effects"?"Effects-track routing is undefined. Use effects on a video, audio or image track.":"Source changes preserve recorded media and existing clips.",juce::dontSendNotification);
         row(note,visual?130:68);automation.setVisible(t.type=="automation");if(t.type=="automation")row(automation,100);
         row(remove);form.setSize(w+20,std::max(y,view.getHeight()));
     }
@@ -215,7 +218,7 @@ private:
         if(cat=="camera" || cat=="microphone")
         {const int fi=captureFormat.getSelectedId()-1;if(!juce::isPositiveAndBelow(fi,formats.size())){owner.warn("Choose a supported capture format first.");return;}settings=formats[fi].clone();}
         mutate("source",movie::object({{"source",movie::object({{"category",cat},{"identity",id},{"settings",settings}})}}));
-        if(cat=="display" || cat=="window" || cat=="camera" || cat=="microphone"){owner.selectedMedia={};owner.sourcePlayback.play(false);owner.syncVisualCapture();owner.dock->activatePanel("source");}
+        if(cat=="display" || cat=="window" || cat=="camera" || cat=="microphone"){owner.selectedMedia={};owner.sourcePlayback.play(false);owner.monitorCaptureInput(trackId);}
     }
     MainComponent& owner;juce::Viewport view;juce::Component form;bool syncing=false,valid=false;juce::String trackId;
     std::vector<juce::String> types{"video","audio","image","effects","automation"},categories,mediaIds;

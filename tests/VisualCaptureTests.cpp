@@ -21,8 +21,9 @@ public:
     ColourFixture(){setSize(360,240);startTimer(300);}
     void paint(juce::Graphics& g) override {g.fillAll(red?juce::Colour(240,30,20):juce::Colour(20,210,40));}
 private:
-    void timerCallback() override {red=!red;repaint();}
+    void timerCallback() override {red=!red;if(++ticks%5==0)setSize(getWidth()==360?640:360,getWidth()==360?400:240);repaint();}
     bool red=false;
+    int ticks=0;
 };
 class FixtureWindow final : public juce::DocumentWindow
 {
@@ -63,6 +64,7 @@ int main(int argc,char** argv)
             auto stream=output.getChildFile("failed-window.png").createOutputStream();juce::PNGImageFormat().writeImageToStream(last.image,*stream);
         }
         require(changing,"Live window pixels did not update");
+        require(waitFor([&]{const auto p=capture.preview("track-a");return p.image.isValid() && p.image.getWidth()!=first.image.getWidth() && p.frameNumber>first.frameNumber;}),"Resizing a captured window stopped the frame stream");
         require((int)capture.status()["activeAcquisitions"]==1 && capture.preview("track-b").subscribers==2,"Duplicate physical acquisition for shared source");
         auto save=[&](const char* name,const juce::Image& image){auto stream=output.getChildFile(name).createOutputStream();require(stream && juce::PNGImageFormat().writeImageToStream(image,*stream),"Could not save validation image");};
         save("window-live.png",first.image);

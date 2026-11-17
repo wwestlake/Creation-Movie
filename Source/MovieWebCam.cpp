@@ -85,7 +85,7 @@ struct WebCamCapture::Impl : std::enable_shared_from_this<WebCamCapture::Impl> {
         monitor.enabled=false;++monitor.generation;
         std::vector<std::unique_ptr<rtc::WebSocketServer>> oldServers;std::shared_ptr<rtc::PeerConnection> oldPeer;
         std::vector<std::shared_ptr<rtc::WebSocket>> oldSockets;
-        {std::lock_guard lock(mutex);oldServers=std::move(servers);oldPeer=std::move(peer);oldSockets.swap(sockets);channel.reset();tracks.clear();session={};secret.clear();state="stopped";for(auto& s:streams){s.preview.state="unavailable";s.preview.message="WebCam stopped; pair again to reconnect.";}}
+        {std::lock_guard lock(mutex);oldServers=std::move(servers);oldPeer=std::move(peer);oldSockets.swap(sockets);channel.reset();tracks.clear();session={};secret.clear();state="stopped";for(auto& s:streams){s.preview.state="unavailable";s.preview.image={};s.preview.peak=0;s.preview.message="WebCam stopped; pair again to reconnect.";}}
         {std::lock_guard lock(queueMutex);incoming.clear();queued=0;queueGeneration={};queueOverflow=false;}
         for(auto& server:oldServers)server->stop();for(auto& s:oldSockets){s->resetCallbacks();s->forceClose();}if(oldPeer){oldPeer->resetCallbacks();oldPeer->close();}
     }
@@ -162,7 +162,16 @@ struct WebCamCapture::Impl : std::enable_shared_from_this<WebCamCapture::Impl> {
                 {std::lock_guard lock(mutex);if(generation!=session)return;channel=c;}
                 c->onMessage([this,lifetime,generation](rtc::message_variant m){auto alive=lifetime.lock();if(!alive)return;if(auto* text=std::get_if<std::string>(&m))clockReply(*text,generation);});
             });
-            connection->onStateChange([this,lifetime=weak_from_this(),generation](rtc::PeerConnection::State value){auto alive=lifetime.lock();if(!alive)return;std::lock_guard lock(mutex);if(generation!=session)return;if(value==rtc::PeerConnection::State::Connected&&!failed)state="connected";if(value==rtc::PeerConnection::State::Disconnected||value==rtc::PeerConnection::State::Failed||value==rtc::PeerConnection::State::Closed){state="failed";error="Phone connection ended. Check the local network and firewall, then scan a fresh QR code.";for(auto& s:streams){s.preview.state="unavailable";s.preview.message="WebCam disconnected. Pair again with a fresh invitation.";}}});
+            connection->onStateChange([this,lifetime=weak_from_this(),generation](rtc::PeerConnection::State value){
+                auto alive=lifetime.lock();if(!alive)return;std::lock_guard lock(mutex);if(generation!=session)return;
+                if(value==rtc::PeerConnection::State::Connected&&!failed){state="connected";error={};}
+                if(value==rtc::PeerConnection::State::Disconnected||value==rtc::PeerConnection::State::Failed||value==rtc::PeerConnection::State::Closed){
+                    if(!failed){state=value==rtc::PeerConnection::State::Failed?"failed":"disconnected";
+                        error=state=="failed"?"Phone media connection failed. Check the local network and pair again.":"Phone disconnected. Pair again with a fresh QR code.";}
+                    monitor.enabled=false;++monitor.generation;
+                    for(auto& s:streams){s.preview.state="unavailable";s.preview.image={};s.preview.peak=0;s.preview.message=error;}
+                }
+            });
             connection->onGatheringStateChange([weak,socket,generation,localSecret](rtc::PeerConnection::GatheringState value){
                 if(value!=rtc::PeerConnection::GatheringState::Complete)return;
                 try{auto c=weak.lock();if(!c)return;auto description=c->localDescription();if(!description)return;
