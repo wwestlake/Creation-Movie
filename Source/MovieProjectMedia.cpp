@@ -1,4 +1,6 @@
 #include "MovieProjectMedia.h"
+#include "MovieProjectMediaRegistration.h"
+#include <creation/services/SuiteVfsServiceClient.h>
 
 namespace movie
 {
@@ -28,25 +30,14 @@ creation::assets::AssetDescriptor describeProjectMedia(const Media& media)
 
 bool registerSequenceMedia(creation::assets::ProjectSession& session, Sequence& sequence, juce::String& error)
 {
-    if (!session.refreshManifest(error)) return false;
-    for (auto& media : sequence.media)
-    {
-        const auto* asset = session.getManifest().assetCatalog.findByVersionId(media.versionId);
-        if (asset != nullptr)
+    return detail::registerMediaReferences(session, sequence,
+        [&session](juce::StringArray& paths, juce::String& problem)
         {
-            if (asset->id != media.id || asset->logicalPath != media.path)
-            { error = "Movie's media reference disagrees with the shared catalog: " + media.id; return false; }
-        }
-        else if (!media.catalogued && session.containsEntry(media.path))
-        {
-            // Register already-stored Movie media by reference. Never duplicate bytes.
-            session.upsertAssetDescriptor(describeProjectMedia(media));
-        }
-        // A previously registered, subsequently removed version stays unresolved;
-        // saving an old edit must never resurrect another app's catalog deletion.
-        media.catalogued = true;
-    }
-    return true;
+            creation::services::SuiteVfsServiceClient client;
+            if (client.discover() && client.listProjectEntries(session.getProjectId(), paths)) return true;
+            problem = "Could not list project media entries. Retry the save; registration is still pending.";
+            return false;
+        }, describeProjectMedia, error);
 }
 
 juce::StringArray resolveProjectMedia(const creation::assets::ProjectSession& session,

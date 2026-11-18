@@ -11,10 +11,12 @@ static void edit(Document& d,const char* command,juce::var args)
 #include "EffectsTests.inc"
 #include "AutomationTests.inc"
 #include "TransitionTests.inc"
+#include "ProjectMediaRegistrationTests.inc"
 int main()
 {
     try
     {
+        runProjectMediaRegistrationTests();
         {
             Document versions;
             Media old;old.id="shared-audio";old.versionId="shared-audio@1";old.name="Shared sound";
