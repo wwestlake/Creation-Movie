@@ -6,7 +6,7 @@ namespace movie
 {
 struct RecordedTrack
 {
-    juce::String trackId,sourceId,sourceKind,id,operation,path,error;
+    juce::String trackId,sourceId,sourceKind,sourceName,id,operation,path,error;
     juce::var settings,diagnostics;
     MediaInfo info;double start=0;
     bool usable=false;

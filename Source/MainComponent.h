@@ -19,6 +19,11 @@ public:
     bool keyPressed(const juce::KeyPress&)override;
     void requestQuit();
 private:
+    void showPhonePairing();
+    void disconnectPhone();
+    void showCaptureInputs(juce::Component*);
+    void monitorCaptureInput(const juce::String&);
+    juce::var captureViewerStatus() const;
     class Library;class Monitor;class Timeline;class Inspector;class TrackInspector;class EffectsPanel;class AutomationEditor;class TransitionPanel;
     struct Job
     {
@@ -68,8 +73,8 @@ private:
     CreationSuiteHeaderBar header;
     juce::LookAndFeel_V4 look;
     juce::MenuBarComponent menu{this};
-    juce::Label status,timecode;
-    juce::TextButton split{"Split"},title{"Title"},fit{"Fit timeline"},cancelJob{"Cancel job"};
+    juce::Label status,timecode,phoneStatus;
+    juce::TextButton split{"Split"},title{"Title"},fit{"Fit timeline"},cancelJob{"Cancel job"},pairPhone{"Pair Phone"},disconnectPhoneButton{"Disconnect Phone"};
     juce::Slider zoom;
     std::unique_ptr<Library> library;std::unique_ptr<Monitor> monitor,sourceMonitor;
     std::unique_ptr<Timeline> timeline;std::unique_ptr<Inspector> inspector;
@@ -80,8 +85,10 @@ private:
     std::unique_ptr<creation::agent::CardsPanel> cards;
     std::unique_ptr<CreationDock::DockManager> dock;
     std::unique_ptr<juce::FileChooser> chooser;
-    std::unique_ptr<juce::DocumentWindow> settingsWindow,helpWindow;
+    std::unique_ptr<juce::DocumentWindow> settingsWindow,helpWindow,phonePairingWindow;
     juce::String selectedClip,selectedMedia,selectedMediaVersion,selectedTrack,selectedTransition,lastStatus;
+    juce::String monitoredCaptureTrack;
+    bool viewerFollowsInputs=true;
     double visibleStart=0,pixelsPerSecond=35,lastPreviewTime=-1;
     std::shared_ptr<Job> job=std::make_shared<Job>();std::thread worker;
     bool closing=false,quitAfterSave=false;int autosaveTicks=0;

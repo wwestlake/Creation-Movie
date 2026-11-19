@@ -65,8 +65,14 @@ async def run(args):
                 await peer.setRemoteDescription(RTCSessionDescription(**answer))
                 try:
                     async with client.ws_connect(invitation["endpoint"], origin="https://lagdaemon.com") as replay:
+                        await replay.send_json(dict(session=session, nonce=b64(nonce), ciphertext=b64(encrypted)))
                         failure = await replay.receive(timeout=5)
-                        if failure.type.name not in ("CLOSE", "CLOSED", "ERROR"):
+                        if failure.type.name == "TEXT":
+                            rejection = json.loads(failure.data)
+                            plain = AESGCM(key_for(secret, session, "answer")).decrypt(unb64(rejection["nonce"]), unb64(rejection["ciphertext"]), session.encode())
+                            if json.loads(plain) != {"type": "error", "code": "consumed"}:
+                                raise RuntimeError("Consumed invitation not rejected authentically")
+                        elif failure.type.name not in ("CLOSE", "CLOSED", "ERROR"):
                             raise RuntimeError("Consumed invitation accepted on a new connection")
                 except (ClientConnectionError, WSServerHandshakeError):
                     pass  # The native listener may reject a consumed invitation before upgrading HTTP.

@@ -7,7 +7,13 @@ bool waitRecording(int stage,bool ready)
     require(++recordingRetries<160,("Recording UI timeout at stage "+juce::String(stage)+": "+status["state"].toString()).toRawUTF8());step=stage;return true;
 }
 void armRecording(const juce::String& id,bool armed,bool monitoring=false)
-{owner.runUi("movie.track.preferences",movie::object({{"trackId",id},{"armed",armed},{"monitoring",monitoring}}));}
+{
+    // The historical fixture now configures Enabled before a take and only
+    // changes viewer selection during a take.
+    if(owner.recording.active()){owner.monitorCaptureInput(monitoring?id:juce::String());return;}
+    owner.runUi("movie.track.enabled",movie::object({{"trackId",id},{"enabled",armed}}));
+    owner.runUi("movie.track.preferences",movie::object({{"trackId",id},{"armed",false},{"monitoring",monitoring}}));
+}
 void verifyRecordedMedia(const juce::var& take,int expected)
 {
     const auto* tracks=take["tracks"].getArray();require(tracks && tracks->size()==expected,"Wrong independently recorded track count");

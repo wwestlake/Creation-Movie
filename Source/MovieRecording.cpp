@@ -1,6 +1,7 @@
 #include "MovieRecording.h"
 #include "MovieRecordingWriter.h"
 #include "MovieDeviceCapture.h"
+#include "MovieCaptureInputs.h"
 #include <creation/assets/VfsEntryInputStream.h>
 #include "MovieMedia.h"
 #include <thread>
@@ -19,20 +20,18 @@ struct RecordingCoordinator::Impl
     juce::var readiness(const Sequence& sequence)const
     {
         juce::Array<juce::var> tracks,errors;const auto sources=capture.sources();std::map<juce::String,std::vector<juce::var>> requests;
-        for(const auto& track:sequence.tracks)if(track.armed)
+        for(const auto& track:sequence.tracks)if(recordsCaptureInput(track))
         {
             const auto kind=track.source["category"].toString(),id=track.source["identity"].toString();juce::String problem;
             if(track.type!="video" && track.type!="audio")continue;
-            if(!track.enabled)problem="Armed track is disabled.";
-            else if((track.type=="video" && kind!="display" && kind!="window" && kind!="camera") || (track.type=="audio" && kind!="microphone"))problem="Assign a supported physical capture source.";
-            else problem=capture.validate(id,kind,track.source["settings"]);
+            problem=capture.validate(id,kind,track.source["settings"]);
             tracks.add(object({{"trackId",track.id},{"name",track.name},{"sourceId",id},{"kind",kind},{"error",problem}}));
             if(problem.isNotEmpty())errors.add(track.name+": "+problem);else requests[id].push_back(track.source["settings"]);
         }
         for(const auto& request:requests)
             for(const auto& source:sources)if(source.id==request.first && (source.kind=="camera" || source.kind=="microphone"))
-            {bool compatible=false;for(const auto& format:source.formats)if(std::all_of(request.second.begin(),request.second.end(),[&](const juce::var& settings){return captureFormatMatches(format,settings);}))compatible=true;if(!compatible)errors.add(source.name+": armed tracks request incompatible formats.");}
-        if(tracks.isEmpty())errors.add("Arm at least one video/audio track.");if(tracks.size()>16)errors.add("A session supports at most 16 armed tracks.");
+            {bool compatible=false;for(const auto& format:source.formats)if(std::all_of(request.second.begin(),request.second.end(),[&](const juce::var& settings){return captureFormatMatches(format,settings);}))compatible=true;if(!compatible)errors.add(source.name+": enabled inputs request incompatible formats.");}
+        if(tracks.isEmpty())errors.add("Enable at least one camera, screen, window or microphone input.");if(tracks.size()>16)errors.add("A session supports at most 16 enabled capture tracks.");
         if(sequence.projectId.isEmpty())errors.add("Open a VFS project first.");
         return object({{"ready",errors.isEmpty()},{"tracks",tracks},{"errors",errors},{"streamingServiceCheckedDuringPrepare",true}});
     }
@@ -51,7 +50,7 @@ struct RecordingCoordinator::Impl
         {
             if(!client.discover() || !client.supportsStreamingWrites())throw std::runtime_error("The running VFS service lacks open-ended streaming writes. Update the service before recording; no media was recorded.");
             std::vector<RecordingSubscription> subscriptions;
-            for(const auto& track:sequence.tracks)if(track.armed && (track.type=="video" || track.type=="audio"))
+            for(const auto& track:sequence.tracks)if(recordsCaptureInput(track))
             {auto task=std::make_unique<Task>();task->track=track;subscriptions.push_back({track.id,track.source["identity"].toString(),track.source["settings"].clone(),task->queue});tasks.push_back(std::move(task));}
             journal("preparing");capture.setRecordingSubscriptions(subscriptions);
             const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(12);
@@ -60,7 +59,7 @@ struct RecordingCoordinator::Impl
                 if(stop.load())throw std::runtime_error("Recording cancelled during preparation.");bool ready=true;
                 for(const auto& task:tasks)
                 {const auto p=capture.preview("record:"+task->track.id);if(p.state=="failed" || p.state=="unavailable" || p.state=="formatConflict" || p.state=="unsupportedFormat")throw std::runtime_error((task->track.name+": "+p.message).toStdString());if(p.state!="live" || (task->track.type=="video"?!p.image.isValid():p.sampleCount==0))ready=false;}
-                if(ready)break;if(std::chrono::steady_clock::now()>deadline)throw std::runtime_error("Timed out preparing all armed sources.");std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                if(ready)break;if(std::chrono::steady_clock::now()>deadline)throw std::runtime_error("Timed out preparing all enabled capture inputs.");std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
             for(auto& task:tasks)
             {if(stop.load())throw std::runtime_error("Recording cancelled during preparation.");task->recorder=std::make_unique<TrackRecorder>(project,take,task->track,task->queue);task->recorder->prepare(capture.preview("record:"+task->track.id));entries.add(task->recorder->result().toJson());}

@@ -1,20 +1,26 @@
 # Movie WebCam QR pairing
 
-Movie displays the existing one-use private LAN invitation as a local QR code.
-In Track Inspector choose Pair/disconnect, then the PC LAN interface. On the
-phone choose Scan QR in Djehuti WebCam, scan Movie's code and tap Connect.
-Both devices must be on the same non-isolated LAN. No phone update is required.
+Click **Pair Phone** in Movie's main toolbar (also available in Track Inspector).
+Movie discovers suitable active local endpoints and displays one secure QR code.
+In Android WebCam 0.0.5 or newer, choose **Scan pairing QR code** and scan it.
+Connection attempts begin automatically; grant camera/microphone access if asked.
+No IP selection, address comparison, or copying is required. Manual invitation
+entry remains an optional fallback on the phone.
 
-The pairing dialog shows a 120-second countdown. Expired or used QR codes are
-cleared. New QR code creates a new invitation and invalidates the previous one;
-it is disabled during negotiation or connection to avoid replacing a live peer.
-Closing a pending pairing dialog revokes the unused invitation; closing after
-connection leaves streaming active. No secret is copied to the clipboard,
-written to a file/project, or sent to an external QR service.
+Both devices need a reachable local network path. Routed private networks are
+allowed; matching address prefixes are neither required nor sufficient. The
+pairing window shows Waiting, Connecting, Connected or Failed, with guidance.
+The modeless setup window automatically closes on successful pairing and returns
+to Movie. Close cancels unfinished setup; Done closes an existing connection
+summary without disconnecting it. Phone status and Disconnect Phone are always
+available in the workspace footer. Reopening Pair Phone preserves a live stream.
 
-The MIT-licensed Nayuki generator is copied app-locally from the existing Suite
-Remote Receiver dependency, preserving its embedded license. Rendering uses
-integer-sized modules, black on white, with a four-module quiet zone.
+The invitation is single-use and expires after 120 seconds. New QR code revokes
+the previous generation. No invitation is copied to clipboard, persisted in the
+project or sent to a QR service. The existing MIT-licensed Nayuki generator
+renders integer black/white modules with a four-module quiet zone.
 
-Physical phone scanning and the Windows firewall/network environment remain
-hands-on validation items. This change does not alter the media/timing protocol.
+See [implementation and verification](AUTOMATIC_PHONE_PAIRING.md) for adapter
+selection, limitations and the physical Galaxy S23 Ultra acceptance procedure.
+
+See [pairing lifecycle verification](PHONE_PAIRING_LIFECYCLE.md) for the setup-window fixes.

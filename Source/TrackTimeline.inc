@@ -112,8 +112,9 @@ public:
             {
                 if(t.type=="audio" || t.type=="video")
                 {
-                    g.setColour(t.armed?juce::Colours::salmon:juce::Colours::silver);g.drawText(t.armed?"Arm on":"Arm",28,y+h-22,48,18,juce::Justification::centredLeft);
-                    g.setColour(t.monitoring?juce::Colours::lightblue:juce::Colours::silver);g.drawText(t.monitoring?"Mon on":"Mon",85,y+h-22,48,18,juce::Justification::centredLeft);
+                    const bool input=movie::isCaptureInput(t);
+                    g.setColour(input && t.enabled?juce::Colours::salmon:juce::Colours::silver);g.drawText(input?(t.enabled?"REC on":"REC off"):"",28,y+h-22,52,18,juce::Justification::centredLeft);
+                    g.setColour(owner.monitoredCaptureTrack==t.id?juce::Colours::lightblue:juce::Colours::silver);g.drawText(input?"View":"",85,y+h-22,48,18,juce::Justification::centredLeft);
                 }
                 g.setColour(juce::Colours::silver);g.drawText("Configure...",151,y+h-22,84,18,juce::Justification::centredLeft);
             }
@@ -208,8 +209,8 @@ public:
             if(e.x<26 && local<28)owner.runUi("movie.track.enabled",movie::object({{"trackId",t.id},{"enabled",!t.enabled}}));
             else if(local>=t.heightPixels-24 && t.heightPixels>=64)
             {
-                if((t.type=="audio" || t.type=="video") && e.x<80)owner.runUi("movie.track.preferences",movie::object({{"trackId",t.id},{"armed",!t.armed}}));
-                else if((t.type=="audio" || t.type=="video") && e.x<140)owner.runUi("movie.track.preferences",movie::object({{"trackId",t.id},{"monitoring",!t.monitoring}}));
+                if(movie::isCaptureInput(t) && e.x<80)owner.runUi("movie.track.enabled",movie::object({{"trackId",t.id},{"enabled",!t.enabled}}));
+                else if(movie::isCaptureInput(t) && e.x<140)owner.monitorCaptureInput(t.id);
             }
             else dragTrack=t.id;
             return;
