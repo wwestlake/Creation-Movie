@@ -1,5 +1,23 @@
 # Djehuti Movie implementation handoff
 
+
+## November 12 - Station / Movie shared projects, Order 1
+
+Implementation is on `feat/station-movie-shared-project-order1`, from integrated
+`master`. No merge or Order 2 work is authorized. Movie now opens shared projects
+without prior Movie state, resolves catalog media directly through the VFS, saves
+exact clip version references and retains peer media through undo/redo. The
+updated shared AssetSystem/VFS service is a prerequisite. Existing unpublished
+phone-pairing work remains on its original branches.
+
+Final Debug builds, document regressions and shared session tests pass. All six
+mounted acceptance groups pass, including three cross-app save cycles, exact
+version rendering and preservation of both native documents. All owned app and
+test processes, including the test VFS service, have exited. See
+[the Suite report](../../../docs/architecture/Station-Movie-Shared-Project-Order-1.md)
+and [Movie #49](https://github.com/wwestlake/Creation-Movie/issues/49) for final evidence
+and review links. Do not update the umbrella gitlink to an unmerged app branch.
+
 ## October 29 — Capture Phase 4: ready for review
 
 Phase 3 PR #41 is merged at `71e5f33`; its completed local/remote branch was

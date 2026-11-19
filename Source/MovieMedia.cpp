@@ -286,7 +286,7 @@ Renderer::Renderer(Sequence s,std::atomic<bool>* c):sequence(std::move(s)),cance
 }
 MediaReader& Renderer::reader(const Media& m,bool audio,const juce::String& instance)
 {
-    const auto key=m.id+(audio?"/a":"/v")+instance;auto found=readers.find(key);
+    const auto key=m.id+"/"+m.versionId+(audio?"/a":"/v")+instance;auto found=readers.find(key);
     if(found!=readers.end())return *found->second;
     // A bounded cache; sequential clips reuse their reader across frames/blocks.
     if(readers.size()>=16)readers.erase(readers.begin());
@@ -305,7 +305,7 @@ void Renderer::drawVideoClip(juce::Graphics& g,const Clip& c,double seconds,int 
                 g.setColour(juce::Colours::white);g.setFont(juce::FontOptions((float)height/18,juce::Font::bold));
                 g.drawFittedText(title,box.reduced(width/40),juce::Justification::centred,3);return;
             }
-            const auto* m=sequence.findMedia(c.assetId);if(!m || !m->info.hasVideo)return;
+            const auto* m=sequence.findMedia(c.assetId,c.assetVersionId);if(!m || !m->info.hasVideo)return;
             const auto image=reader(*m,false,c.id).videoAt(m->info.still?0:c.sourceStartSeconds+seconds-c.startSeconds,width,height);
             if(image.isValid())g.drawImageWithin(image,0,0,width,height,juce::RectanglePlacement::centred,false);
 }
@@ -347,7 +347,7 @@ void Renderer::audioBlock(double seconds,int samples,int rate,float* output)
         std::fill(trackBuffer.begin(),trackBuffer.end(),0.0f);
         for(const auto index:trackClips[ti])
         {
-            const auto& c=sequence.clips[index];auto* m=sequence.findMedia(c.assetId);if(!m || !m->info.hasAudio || c.soundDetached)continue;
+            const auto& c=sequence.clips[index];auto* m=sequence.findMedia(c.assetId,c.assetVersionId);if(!m || !m->info.hasAudio || c.soundDetached)continue;
             double clipStart=c.startSeconds,clipEnd=c.startSeconds+c.durationSeconds;
             for(const auto tr:audioTransitions[index]){clipStart=std::min(clipStart,sequence.transitions[tr].start);clipEnd=std::max(clipEnd,sequence.transitions[tr].end());}
             const auto from=std::max(seconds,clipStart),to=std::min(seconds+(double)samples/rate,clipEnd);

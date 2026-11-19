@@ -32,7 +32,7 @@ private:
     Result startJob(const juce::String&,std::function<juce::var(Job&)>,std::function<void(const juce::var&)> completed = {});
     void registerCommands();void runUi(const juce::String&,const juce::var& = movie::object({}));
     void confirmProjectChange(const juce::String&, const juce::var&);
-    void changed();void refresh();void selectClip(const juce::String&);void selectMedia(const juce::String&);
+    void changed();void refresh();void selectClip(const juce::String&);void selectMedia(const juce::String&, const juce::String& versionId = {});
     void selectTrack(const juce::String&, bool showInspector=true);
     void showTransition(const juce::String&,const juce::String& clip={});
     void selectAutomationPoint(const juce::String& lane,const juce::String& point);
@@ -81,7 +81,7 @@ private:
     std::unique_ptr<CreationDock::DockManager> dock;
     std::unique_ptr<juce::FileChooser> chooser;
     std::unique_ptr<juce::DocumentWindow> settingsWindow,helpWindow;
-    juce::String selectedClip,selectedMedia,selectedTrack,selectedTransition,lastStatus;
+    juce::String selectedClip,selectedMedia,selectedMediaVersion,selectedTrack,selectedTransition,lastStatus;
     double visibleStart=0,pixelsPerSecond=35,lastPreviewTime=-1;
     std::shared_ptr<Job> job=std::make_shared<Job>();std::thread worker;
     bool closing=false,quitAfterSave=false;int autosaveTicks=0;
