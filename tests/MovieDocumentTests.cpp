@@ -115,6 +115,13 @@ int main()
         Document devices;
         edit(devices,"track.create",object({{"type","video"}}));const auto cameraTrack=devices.sequence.tracks.back().id;
         const auto cameraConfig=object({{"category","camera"},{"identity","camera:unavailable-saved"},{"settings",object({{"width",1280},{"height",720},{"fpsNum",30000},{"fpsDen",1001},{"format","{3231564E-0000-0010-8000-00AA00389B71}"}})}});
+        const auto trackCount=devices.sequence.tracks.size();
+        edit(devices,"track.create",object({{"type","video"},{"name","Tutorial camera"},{"source",cameraConfig}}));
+        check(devices.sequence.tracks.back().enabled && !devices.sequence.tracks.back().armed,"New capture input has hidden recording prerequisites");
+        check(juce::JSON::toString(devices.sequence.tracks.back().source)==juce::JSON::toString(cameraConfig),"Atomic input creation lost its source format");
+        devices.undo.undo();check(devices.sequence.tracks.size()==trackCount,"Undo did not remove the complete input assignment");
+        devices.undo.redo();check(devices.sequence.tracks.back().name=="Tutorial camera","Redo did not restore capture input identity");
+        check(!devices.edit("track.create",object({{"type","audio"},{"source",cameraConfig}}),error),"Incompatible capture source was accepted on an audio track");
         edit(devices,"track.source",object({{"trackId",cameraTrack},{"source",cameraConfig}}));check(devices.sequence.tracks.back().monitoring,"Camera assignment did not enable preview");
         edit(devices,"track.create",object({{"type","audio"}}));const auto microphoneTrack=devices.sequence.tracks.back().id;
         edit(devices,"track.preferences",object({{"trackId",microphoneTrack},{"monitoring",true}}));

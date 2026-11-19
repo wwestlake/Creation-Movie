@@ -26,6 +26,9 @@ For create, open, save, import, and export, command acceptance returns a `jobId`
 
 ## Other documentation
 
+- [Multitrack acquisition and Central Viewer](docs/MULTITRACK_ACQUISITION.md)
+- [Android webcam readiness and physical acceptance](docs/WEBCAM_READINESS.md)
+
 - [Product vision](docs/CREATION_MOVIE_VISION.md)
 - [Language integration boundaries](docs/LANGUAGE_ROLLOUT.md)
 - [Current implementation handoff](HANDOFF.md)

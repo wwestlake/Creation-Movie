@@ -1,5 +1,13 @@
 # Djehuti Movie capabilities
 
+## Current multitrack acquisition
+
+Central Viewer monitors a selected input or the edited timeline. All enabled
+capture tracks record independently using one take timeline; monitoring never
+routes or changes the recordings. Input controls, source identity, nondestructive
+editing and validation are described in [Multitrack acquisition](MULTITRACK_ACQUISITION.md).
+This supersedes the older capture phases' Arm and separate-Source-Monitor workflow.
+
 ## Shared projects (Order 1, review branch)
 
 Movie opens valid Suite VFS projects, including Station projects with no saved

@@ -16,6 +16,7 @@ public:
     void renderAudio(float*const*,int channels,int frames,double rate);
 #if MOVIE_WEBCAM_TESTS
     static void verifyTimingBoundaries();
+    void expireInvitationForTest();
 #endif
 private:
     struct Impl;

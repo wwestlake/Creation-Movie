@@ -42,7 +42,7 @@ struct Stream
 };
 }
 juce::var RecordedTrack::toJson()const
-{return object({{"trackId",trackId},{"sourceId",sourceId},{"sourceKind",sourceKind},{"settings",settings},{"id",id},{"versionId",id},{"path",path},{"operationId",operation},{"error",error},{"usable",usable},{"startSeconds",start},{"info",info.toJson()},{"diagnostics",diagnostics}});}
+{return object({{"trackId",trackId},{"sourceId",sourceId},{"sourceKind",sourceKind},{"sourceName",sourceName},{"settings",settings},{"id",id},{"versionId",id},{"path",path},{"operationId",operation},{"error",error},{"usable",usable},{"startSeconds",start},{"info",info.toJson()},{"diagnostics",diagnostics}});}
 struct TrackRecorder::Impl
 {
     RecordedTrack result;std::shared_ptr<CaptureQueue> queue;std::unique_ptr<Stream> output,timing;
@@ -56,6 +56,7 @@ struct TrackRecorder::Impl
     Impl(const juce::String& project,const juce::String& take,const Track& track,std::shared_ptr<CaptureQueue> q):queue(std::move(q))
     {
         result.trackId=track.id;result.sourceId=track.source["identity"].toString();result.sourceKind=track.source["category"].toString();result.settings=track.source["settings"].clone();
+        result.sourceName=track.name;
         result.id=juce::Uuid().toString();audio=track.type=="audio";result.path="Media/Capture/"+take+"/"+result.id+(audio?".wav":".nut");
         output=std::make_unique<Stream>(project,result.path);result.operation=output->operation;
         timing=std::make_unique<Stream>(project,"Media/Capture/"+take+"/"+result.id+".timing.jsonl");
@@ -107,9 +108,15 @@ struct TrackRecorder::Impl
     }
     void video(const CaptureSample& sample,juce::int64 duration)
     {
-        if(sample.image.getWidth()!=width || sample.image.getHeight()!=height)throw std::runtime_error("Source dimensions changed; finalized the existing size as a partial take.");
         const auto pts=(sample.hostTime-first)/10;if(pts<=lastVideoPts){++gaps;return;}lastVideoPts=pts;
-        checked(av_frame_make_writable(frame),"Writable recording frame");juce::Image::BitmapData pixels(sample.image,juce::Image::BitmapData::readOnly);
+        auto image=sample.image;
+        if(image.getWidth()!=width || image.getHeight()!=height)
+        {
+            image=juce::Image(juce::Image::ARGB,width,height,true,juce::SoftwareImageType{});
+            juce::Graphics g(image);g.fillAll(juce::Colours::black);
+            g.drawImageWithin(sample.image,0,0,width,height,juce::RectanglePlacement::centred,false);
+        }
+        checked(av_frame_make_writable(frame),"Writable recording frame");juce::Image::BitmapData pixels(image,juce::Image::BitmapData::readOnly);
         const uint8_t* data[]={pixels.data};int strides[]={pixels.lineStride};sws_scale(scale,data,strides,0,height,frame->data,frame->linesize);frame->pts=pts;
         checked(avcodec_send_frame(codec,frame),"Encode captured video");writePackets(duration/10);++written;
         result.info.duration=(sample.hostTime-first+duration)/10000000.0;
@@ -141,11 +148,10 @@ struct TrackRecorder::Impl
     }
     void consume(const std::shared_ptr<const CaptureSample>& sample)
     {
-        if(!audio && (sample->image.getWidth()!=width || sample->image.getHeight()!=height))throw std::runtime_error("Source dimensions changed; finalized the existing size as a partial take.");
         if(!first){first=sample->hostTime;firstNative=sample->sourceTime;epoch=sample->epoch;clock=sample->clock;result.start=(first-origin)/10000000.0;}
         if(sample->epoch!=epoch || (last && sample->hostTime<last))throw std::runtime_error("Source clock epoch/discontinuity changed; retained partial recording.");
         maxUncertainty=std::max(maxUncertainty,sample->uncertainty100ns);lastNative=sample->sourceTime;
-        const auto line=object({{"sourceTime100ns",sample->sourceTime},{"sessionTime100ns",sample->hostTime-origin},{"sourcePosition",sample->position},{"sequence",sample->sequence},{"frames",sample->frames},{"uncertainty100ns",sample->uncertainty100ns},{"discontinuity",sample->discontinuity},{"repeated",sample->repeated},{"epoch",sample->epoch},{"clock",sample->clock}});
+        const auto line=object({{"sourceTime100ns",sample->sourceTime},{"sessionTime100ns",sample->hostTime-origin},{"sourcePosition",sample->position},{"sequence",sample->sequence},{"frames",sample->frames},{"uncertainty100ns",sample->uncertainty100ns},{"discontinuity",sample->discontinuity},{"repeated",sample->repeated},{"epoch",sample->epoch},{"clock",sample->clock},{"sourceWidth",sample->image.getWidth()},{"sourceHeight",sample->image.getHeight()}});
         timingLines+=juce::JSON::toString(line,true)+"\n";if(timingLines.getNumBytesAsUTF8()>32768){timing->append(timingLines);timingLines={};}
         if(audio)audioSample(*sample);
         else {if(previous){const auto duration=sample->hostTime-previous->hostTime;if(duration>(juce::int64)(nominalPeriod*20000000))++gaps;video(*previous,duration);}previous=sample;}

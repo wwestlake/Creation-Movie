@@ -1,4 +1,9 @@
 # Movie track document (Milestone 1)
+Current capture behavior: every enabled camera/display/window/microphone track
+records independently. Central Viewer selection is transient and never changes
+source configuration or take membership. Legacy armed flags remain serializable
+but do not gate recording; monitoring controls optional microphone listening.
+See [Multitrack acquisition](MULTITRACK_ACQUISITION.md).
 
 Schema `djehuti-movie-sequence`, version 6, keeps an ordered `tracks` array.
 Milestone 3 adds persistent effects chains; version-3 documents remain readable
@@ -38,7 +43,7 @@ All mutations use the same document undo snapshots as timeline edits:
 
 | Command suffix | Arguments beyond trackId |
 | --- | --- |
-| create | type, optional name; no trackId required; ID returned in sequence |
+| create | type, optional name/source; source assignment is atomic; no trackId required |
 | remove | optional removePlacements=true; otherwise occupied tracks reject removal |
 | rename | name |
 | reorder | order: final zero-based array position |

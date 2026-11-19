@@ -100,16 +100,18 @@ struct VisualCapture::Impl
             // A fresh bounded readback avoids stale CPU-visible snapshots observed
             // with staging-texture reuse on the validation machine's driver.
             winrt::com_ptr<ID3D11Texture2D> staging;
+            D3D11_TEXTURE2D_DESC desc{};texture->GetDesc(&desc);
             {
-                D3D11_TEXTURE2D_DESC desc{};texture->GetDesc(&desc);desc.Usage=D3D11_USAGE_STAGING;
+                desc.Usage=D3D11_USAGE_STAGING;
                 desc.BindFlags=0;desc.MiscFlags=0;desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;
                 winrt::check_hresult(device->CreateTexture2D(&desc,nullptr,staging.put()));
             }
             context->CopyResource(staging.get(),texture.get());context->Flush();D3D11_MAPPED_SUBRESOURCE mapped{};
             winrt::check_hresult(context->Map(staging.get(),0,D3D11_MAP_READ,0,&mapped));
-            juce::Image image(juce::Image::ARGB,size.Width,size.Height,true,juce::SoftwareImageType{});
+            const int copyWidth=(std::min)(size.Width,(int)desc.Width),copyHeight=(std::min)(size.Height,(int)desc.Height);
+            juce::Image image(juce::Image::ARGB,copyWidth,copyHeight,true,juce::SoftwareImageType{});
             {juce::Image::BitmapData pixels(image,juce::Image::BitmapData::writeOnly);
-                for(int y=0;y<size.Height;++y)std::memcpy(pixels.getLinePointer(y),(const char*)mapped.pData+(size_t)y*mapped.RowPitch,(size_t)size.Width*4);}
+                for(int y=0;y<copyHeight;++y)std::memcpy(pixels.getLinePointer(y),(const char*)mapped.pData+(size_t)y*mapped.RowPitch,(std::min)((size_t)copyWidth*4,(size_t)mapped.RowPitch));}
             context->Unmap(staging.get(),0);
             latest.image=std::move(image);latest.timestamp100ns=frame.SystemRelativeTime().count();++latest.frameNumber;
             latest.state="live";latest.message={};frame.Close();

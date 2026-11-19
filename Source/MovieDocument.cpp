@@ -185,7 +185,7 @@ bool Document::edit(const juce::String& command,const juce::var& a,juce::String&
         for(const auto& entry:*entries)if((bool)entry["usable"])
         {
             const auto id=entry["id"].toString(),trackId=entry["trackId"].toString();const auto clipId="capture-"+id;
-            if(!s.findMedia(id)){Media media{id,id,"Recorded "+entry["sourceKind"].toString(),entry["path"].toString(),MediaInfo::fromJson(entry["info"])};s.media.push_back(media);undoBefore.media.push_back(media);}
+            if(!s.findMedia(id)){Media media{id,id,"Recorded "+entry.getProperty("sourceName",entry["sourceKind"]).toString(),entry["path"].toString(),MediaInfo::fromJson(entry["info"])};s.media.push_back(media);undoBefore.media.push_back(media);}
             const int ti=s.findTrack(trackId);if(ti<0 || s.findClip(clipId)>=0)continue;
             const auto& track=s.tracks[(size_t)ti];const auto* media=s.findMedia(id);
             if(track.source["identity"].toString()!=entry["sourceId"].toString() || juce::JSON::toString(track.source["settings"])!=juce::JSON::toString(entry["settings"]) || track.source["category"].toString()!=entry["sourceKind"].toString())continue;
@@ -241,6 +241,12 @@ bool Document::edit(const juce::String& command,const juce::var& a,juce::String&
         {
             Track t; t.id=juce::Uuid().toString(); t.type=a.getProperty("type","video").toString();
             t.name=a.getProperty("name",t.type+" "+juce::String(s.tracks.size()+1)).toString().trim();
+            if(a.hasProperty("source"))
+            {
+                t.source=a["source"].clone();
+                const auto category=t.source["category"].toString();
+                t.monitoring=category=="camera" || category=="display" || category=="window";
+            }
             s.tracks.push_back(t);
         }
         else
